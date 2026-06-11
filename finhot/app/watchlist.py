@@ -3,14 +3,18 @@
 列表为空时整体跳过。条目格式与 sources.py 一致，统一进入热词分析。
 
 接入说明：
-- 微博：m.weibo.cn 的容器 API 免登录可用，但有频控；uid -> containerid=107603{uid}
+- 微博：m.weibo.cn 容器 API（uid -> containerid=107603{uid}）需游客 cookie；失效时自动走 genvisitor2
+  接口重新生成并保存，也可手动指定（环境变量 WEIBO_COOKIE 或 finhot/data/weibo_cookie.txt，已 gitignore）
 - 雪球：需要先访问主页拿 cookie（有 WAF，失败时自动跳过该博主）
-- 公众号：无公开 API，通过搜狗微信搜索抓最新文章，频控严格，仅尽力而为
+- 公众号：无公开 API，走 Wechat2RSS 公益库（wechat2rss.xlab.app，填公众号名自动查覆盖）；不在库里的
+  可填 RSS 直链（自建 Wechat2RSS/RSSHub 的 feed 地址）
+- rss：通用 RSS 源（媒体官网 feed 等），填 {"name": 源名, "url": feed 地址}
 - X(Twitter)：经 Nitter/RSSHub 免费通路抓 RSS，多实例自动切换，公共实例不稳定时跳过
 """
 import email.utils
 import json
 import os
+import re
 import time
 import xml.etree.ElementTree as ET
 
@@ -19,26 +23,84 @@ import requests
 from .sources import UA, TIMEOUT, _mkid, _strip_html
 
 WATCHLIST_PATH = os.path.join(os.path.dirname(__file__), "..", "watchlist.json")
+WEIBO_COOKIE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "weibo_cookie.txt")
+WEIBO_SLEEP = float(os.environ.get("WEIBO_SLEEP", "8"))  # 单号间隔秒数，防频控
+
+
+_weibo_ck = {"value": None}
+
+
+def _weibo_cookie():
+    if _weibo_ck["value"] is not None:
+        return _weibo_ck["value"]
+    ck = os.environ.get("WEIBO_COOKIE", "").strip()
+    if not ck:
+        try:
+            with open(WEIBO_COOKIE_PATH, encoding="utf-8") as f:
+                ck = f.read().strip()
+        except FileNotFoundError:
+            ck = ""
+    _weibo_ck["value"] = ck
+    return ck
+
+
+def _renew_weibo_cookie():
+    """重新生成游客 cookie（相当于新开一个无痕游客）并保存。"""
+    r = requests.post(
+        "https://visitor.passport.weibo.cn/visitor/genvisitor2",
+        data={"cb": "visitor_gray_callback", "tid": "", "from": "weibo"},
+        headers={"User-Agent": UA},
+        timeout=TIMEOUT,
+    )
+    m = re.search(r"visitor_gray_callback\((.*)\)", r.text, re.S)
+    d = json.loads(m.group(1))["data"]
+    ck = f"SUB={d['sub']}; SUBP={d['subp']}"
+    _weibo_ck["value"] = ck
+    try:
+        os.makedirs(os.path.dirname(WEIBO_COOKIE_PATH), exist_ok=True)
+        with open(WEIBO_COOKIE_PATH, "w", encoding="utf-8") as f:
+            f.write(ck)
+    except OSError:
+        pass
+    return ck
 
 
 def load_watchlist():
     try:
         with open(WATCHLIST_PATH, encoding="utf-8") as f:
             data = json.load(f)
-        return {k: data.get(k, []) for k in ("weibo", "xueqiu", "wechat", "x")}
+        return {k: data.get(k, []) for k in ("weibo", "xueqiu", "wechat", "x", "rss")}
     except FileNotFoundError:
-        return {"weibo": [], "xueqiu": [], "wechat": [], "x": []}
+        return {"weibo": [], "xueqiu": [], "wechat": [], "x": [], "rss": []}
 
 
-def fetch_weibo_user(uid):
+def _weibo_api(uid, cookie):
     r = requests.get(
         "https://m.weibo.cn/api/container/getIndex",
         params={"type": "uid", "value": uid, "containerid": f"107603{uid}"},
-        headers={"User-Agent": UA, "Referer": f"https://m.weibo.cn/u/{uid}"},
+        headers={"User-Agent": UA, "Referer": f"https://m.weibo.cn/u/{uid}", "Cookie": cookie},
         timeout=TIMEOUT,
     )
+    try:
+        return r.json()
+    except ValueError:
+        return {"ok": -1}
+
+
+class WeiboRateLimited(RuntimeError):
+    """ok=-100：IP 级频控，本轮应停止继续请求微博接口。"""
+
+
+def fetch_weibo_user(uid):
+    data = _weibo_api(uid, _weibo_cookie())
+    if data.get("ok") != 1:
+        data = _weibo_api(uid, _renew_weibo_cookie())
+    if data.get("ok") == -100:
+        raise WeiboRateLimited("weibo api ok=-100 (IP 频控，跳过本轮剩余微博)")
+    if data.get("ok") != 1:
+        raise RuntimeError(f"weibo api ok={data.get('ok')} (游客 cookie 自动续期后仍失败)")
     out = []
-    for card in r.json().get("data", {}).get("cards", []):
+    for card in data.get("data", {}).get("cards", []):
         blog = card.get("mblog")
         if not blog:
             continue
@@ -76,9 +138,70 @@ def fetch_xueqiu_user(user_id):
     return out
 
 
+def _parse_pubdate(pub):
+    """兼容 RFC822 和 '2026-06-11 19:00:00 +0800' 等变体。"""
+    if not pub:
+        return int(time.time())
+    try:
+        return int(email.utils.parsedate_to_datetime(pub).timestamp())
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return int(time.mktime(time.strptime(" ".join(pub.split()), "%Y-%m-%d %H:%M:%S %z")))
+    except Exception:  # noqa: BLE001
+        return int(time.time())
+
+
+def fetch_rss(url, source_name):
+    """通用 RSS 抓取，返回统一格式条目。"""
+    r = requests.get(url, headers={"User-Agent": UA}, timeout=TIMEOUT)
+    if r.status_code != 200 or (b"<rss" not in r.content[:500] and b"<feed" not in r.content[:500] and b"<?xml" not in r.content[:200]):
+        raise RuntimeError(f"{url} -> HTTP {r.status_code} 非 RSS")
+    text = r.content.decode(r.apparent_encoding or "utf-8", "ignore")
+    text = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", text)  # XML 1.0 非法控制字符
+    try:
+        root = ET.fromstring(text.encode("utf-8"))
+    except ET.ParseError:
+        text = re.sub(r"&(?!#?\w+;)", "&amp;", text)  # 未转义的裸 &
+        root = ET.fromstring(text.encode("utf-8"))
+    out = []
+    for it in root.iter("item"):
+        link = (it.findtext("link") or "").strip()
+        ts = _parse_pubdate(it.findtext("pubDate"))
+        out.append({
+            "id": _mkid("rss", link or it.findtext("guid") or it.findtext("title") or ""),
+            "source": source_name,
+            "title": _strip_html(it.findtext("title") or ""),
+            "content": _strip_html(it.findtext("description") or "")[:2000],
+            "url": link,
+            "ts": ts,
+        })
+    return out
+
+
+_w2r_map = {"value": None}
+
+
+def _wechat2rss_map():
+    """Wechat2RSS 公益库的 公众号名 -> feed 地址 映射（运行期拉取并缓存）。"""
+    if _w2r_map["value"] is not None:
+        return _w2r_map["value"]
+    r = requests.get("https://wechat2rss.xlab.app/list/all.html", headers={"User-Agent": UA}, timeout=TIMEOUT)
+    mapping = {}
+    for url, name in re.findall(r'href="(https://wechat2rss\.xlab\.app/feed/[a-f0-9]+\.xml)"[^>]*>([^<]+)</a>', r.text):
+        mapping[name.strip()] = url
+    _w2r_map["value"] = mapping
+    return mapping
+
+
 def fetch_wechat_account(name):
-    # 公众号无公开 API；搜狗微信搜索频控严格，预留接口，建议接入 RSSHub 等代理后启用
-    raise NotImplementedError("公众号抓取需配置代理渠道（如 RSSHub: /wechat/...）")
+    if name.startswith("http"):
+        return fetch_rss(name, f"公众号@{name.rsplit('/', 1)[-1]}")
+    url = _wechat2rss_map().get(name)
+    if not url:
+        raise RuntimeError(f"Wechat2RSS 公益库未收录「{name}」，可改填自建 feed 直链")
+    items = fetch_rss(url, f"公众号@{name}")
+    return items
 
 
 # 公共 Nitter 实例经常失效，按顺序尝试；RSSHub 公共实例作兜底
@@ -133,11 +256,17 @@ def fetch_x_user(user):
 def fetch_watchlist():
     wl = load_watchlist()
     items, errors = [], {}
-    for uid in wl["weibo"]:
+    weibo_uids = wl["weibo"]
+    for i, uid in enumerate(weibo_uids):
         try:
             items.extend(fetch_weibo_user(uid))
+        except WeiboRateLimited as e:
+            # 熔断：频控时不再硬打（越打封越久），本轮剩余博主下轮再抓
+            errors["weibo:_rate_limited"] = f"{e} (剩余 {len(weibo_uids) - i - 1} 个本轮跳过)"
+            break
         except Exception as e:  # noqa: BLE001
             errors[f"weibo:{uid}"] = str(e)
+        time.sleep(WEIBO_SLEEP)  # 频控保护：拉长单号间隔
     for uid in wl["xueqiu"]:
         try:
             items.extend(fetch_xueqiu_user(uid))
@@ -153,4 +282,10 @@ def fetch_watchlist():
             items.extend(fetch_x_user(user))
         except Exception as e:  # noqa: BLE001
             errors[f"x:{user}"] = str(e)
+    for entry in wl.get("rss", []):
+        name, url = entry.get("name", entry.get("url", "")), entry.get("url", "")
+        try:
+            items.extend(fetch_rss(url, name))
+        except Exception as e:  # noqa: BLE001
+            errors[f"rss:{name}"] = str(e)
     return items, errors
