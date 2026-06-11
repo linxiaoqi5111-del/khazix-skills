@@ -61,6 +61,8 @@ python -m app.collector --loop 30
 
 X 抓取走公共 Nitter 实例（xcancel.com 等）的 RSS，多实例自动切换；公共实例不稳定，全部失败时跳过该博主并记录错误，后续可升级为付费 API 或登录态抓取。
 
+雪球匿名通路会先访问 /about 拿临时 token；机房/数据中心 IP 常被阿里云 WAF 滑块拦截（报错 `雪球 WAF 滑块拦截`），此时可在自己浏览器登录雪球后，把 cookie 填入环境变量 `XUEQIU_COOKIE` 或 `finhot/data/xueqiu_cookie.txt`（已 gitignore）；住宅/境内 IP 一般无需配置。
+
 微博接口需游客 cookie，采集器会自动生成并在失效时自动续期（genvisitor2 接口，相当于自动新开一个无痕游客），保存在 `finhot/data/weibo_cookie.txt`；也可用环境变量 `WEIBO_COOKIE` 手动指定（如登录小号 cookie，额度更大）。
 
 微博防频控：单号之间默认间隔 8 秒（环境变量 `WEIBO_SLEEP` 可调）；一旦碰到 IP 级频控（ok=-100）立即熔断，跳过本轮剩余微博博主（日志出现 `weibo:_rate_limited`），下一轮自动恢复，漏抓的内容下轮仍能补回。
