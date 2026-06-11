@@ -3,8 +3,8 @@
 列表为空时整体跳过。条目格式与 sources.py 一致，统一进入热词分析。
 
 接入说明：
-- 微博：m.weibo.cn 容器 API（uid -> containerid=107603{uid}），现需游客 cookie：用浏览器无痕模式打开
-  m.weibo.cn 后复制 Cookie，存入环境变量 WEIBO_COOKIE 或 finhot/data/weibo_cookie.txt（已 gitignore）
+- 微博：m.weibo.cn 容器 API（uid -> containerid=107603{uid}）需游客 cookie；失效时自动走 genvisitor2
+  接口重新生成并保存，也可手动指定（环境变量 WEIBO_COOKIE 或 finhot/data/weibo_cookie.txt，已 gitignore）
 - 雪球：需要先访问主页拿 cookie（有 WAF，失败时自动跳过该博主）
 - 公众号：无公开 API，通过搜狗微信搜索抓最新文章，频控严格，仅尽力而为
 - X(Twitter)：经 Nitter/RSSHub 免费通路抓 RSS，多实例自动切换，公共实例不稳定时跳过
@@ -12,6 +12,7 @@
 import email.utils
 import json
 import os
+import re
 import time
 import xml.etree.ElementTree as ET
 
@@ -21,17 +22,45 @@ from .sources import UA, TIMEOUT, _mkid, _strip_html
 
 WATCHLIST_PATH = os.path.join(os.path.dirname(__file__), "..", "watchlist.json")
 WEIBO_COOKIE_PATH = os.path.join(os.path.dirname(__file__), "..", "data", "weibo_cookie.txt")
+WEIBO_SLEEP = float(os.environ.get("WEIBO_SLEEP", "8"))  # 单号间隔秒数，防频控
+
+
+_weibo_ck = {"value": None}
 
 
 def _weibo_cookie():
+    if _weibo_ck["value"] is not None:
+        return _weibo_ck["value"]
     ck = os.environ.get("WEIBO_COOKIE", "").strip()
-    if ck:
-        return ck
+    if not ck:
+        try:
+            with open(WEIBO_COOKIE_PATH, encoding="utf-8") as f:
+                ck = f.read().strip()
+        except FileNotFoundError:
+            ck = ""
+    _weibo_ck["value"] = ck
+    return ck
+
+
+def _renew_weibo_cookie():
+    """重新生成游客 cookie（相当于新开一个无痕游客）并保存。"""
+    r = requests.post(
+        "https://visitor.passport.weibo.cn/visitor/genvisitor2",
+        data={"cb": "visitor_gray_callback", "tid": "", "from": "weibo"},
+        headers={"User-Agent": UA},
+        timeout=TIMEOUT,
+    )
+    m = re.search(r"visitor_gray_callback\((.*)\)", r.text, re.S)
+    d = json.loads(m.group(1))["data"]
+    ck = f"SUB={d['sub']}; SUBP={d['subp']}"
+    _weibo_ck["value"] = ck
     try:
-        with open(WEIBO_COOKIE_PATH, encoding="utf-8") as f:
-            return f.read().strip()
-    except FileNotFoundError:
-        return ""
+        os.makedirs(os.path.dirname(WEIBO_COOKIE_PATH), exist_ok=True)
+        with open(WEIBO_COOKIE_PATH, "w", encoding="utf-8") as f:
+            f.write(ck)
+    except OSError:
+        pass
+    return ck
 
 
 def load_watchlist():
@@ -43,16 +72,31 @@ def load_watchlist():
         return {"weibo": [], "xueqiu": [], "wechat": [], "x": []}
 
 
-def fetch_weibo_user(uid):
+def _weibo_api(uid, cookie):
     r = requests.get(
         "https://m.weibo.cn/api/container/getIndex",
         params={"type": "uid", "value": uid, "containerid": f"107603{uid}"},
-        headers={"User-Agent": UA, "Referer": f"https://m.weibo.cn/u/{uid}", "Cookie": _weibo_cookie()},
+        headers={"User-Agent": UA, "Referer": f"https://m.weibo.cn/u/{uid}", "Cookie": cookie},
         timeout=TIMEOUT,
     )
-    data = r.json()
+    try:
+        return r.json()
+    except ValueError:
+        return {"ok": -1}
+
+
+class WeiboRateLimited(RuntimeError):
+    """ok=-100：IP 级频控，本轮应停止继续请求微博接口。"""
+
+
+def fetch_weibo_user(uid):
+    data = _weibo_api(uid, _weibo_cookie())
     if data.get("ok") != 1:
-        raise RuntimeError(f"weibo api ok={data.get('ok')} (游客 cookie 失效或频控，见 WEIBO_COOKIE 说明)")
+        data = _weibo_api(uid, _renew_weibo_cookie())
+    if data.get("ok") == -100:
+        raise WeiboRateLimited("weibo api ok=-100 (IP 频控，跳过本轮剩余微博)")
+    if data.get("ok") != 1:
+        raise RuntimeError(f"weibo api ok={data.get('ok')} (游客 cookie 自动续期后仍失败)")
     out = []
     for card in data.get("data", {}).get("cards", []):
         blog = card.get("mblog")
@@ -149,12 +193,17 @@ def fetch_x_user(user):
 def fetch_watchlist():
     wl = load_watchlist()
     items, errors = [], {}
-    for uid in wl["weibo"]:
+    weibo_uids = wl["weibo"]
+    for i, uid in enumerate(weibo_uids):
         try:
             items.extend(fetch_weibo_user(uid))
+        except WeiboRateLimited as e:
+            # 熔断：频控时不再硬打（越打封越久），本轮剩余博主下轮再抓
+            errors["weibo:_rate_limited"] = f"{e} (剩余 {len(weibo_uids) - i - 1} 个本轮跳过)"
+            break
         except Exception as e:  # noqa: BLE001
             errors[f"weibo:{uid}"] = str(e)
-        time.sleep(1)  # 频控保护
+        time.sleep(WEIBO_SLEEP)  # 频控保护：拉长单号间隔
     for uid in wl["xueqiu"]:
         try:
             items.extend(fetch_xueqiu_user(uid))
