@@ -34,6 +34,10 @@ header .sub { color: var(--muted); font-size: 13px; }
 .term { font-weight: 600; font-size: 15px; flex-shrink: 0; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .badge { font-size: 11px; padding: 1px 7px; border-radius: 99px; flex-shrink: 0; }
 .badge.new { background: rgba(251,191,36,.15); color: var(--gold); border: 1px solid rgba(251,191,36,.35); }
+.badge.arch { background: rgba(124,135,171,.12); color: var(--muted); border: 1px solid rgba(124,135,171,.4); }
+.funnel { color: var(--muted); }
+.funnel b { color: var(--text); }
+.funnel .admit b { color: var(--green); }
 .spark { flex: 1; min-width: 60px; height: 26px; }
 .metrics { display: flex; gap: 14px; font-size: 12px; color: var(--muted); flex-shrink: 0; text-align: right; }
 .metrics b { color: var(--text); font-size: 14px; display: block; }
@@ -48,6 +52,7 @@ header .sub { color: var(--muted); font-size: 13px; }
 .news-item:last-child { border-bottom: none; }
 .news-item .src { color: var(--accent); font-size: 12px; margin-right: 8px; }
 .news-item .time { color: var(--muted); font-size: 12px; }
+.news-item .iscore { color: var(--accent); font-size: 12px; margin-left: 8px; }
 .news-item .txt { margin-top: 4px; font-size: 13px; color: var(--text); }
 .news-item .txt a { color: inherit; text-decoration: none; }
 .news-item .txt a:hover { color: var(--accent); }
@@ -90,10 +95,10 @@ mark { background: rgba(249,115,22,.25); color: var(--hot); border-radius: 3px; 
     <div class="placeholder">点击左侧热词查看趋势与相关快讯</div>
   </div>
 </div>
-<div class="footer">FinHot · 热度 = 当日提及该词的快讯条数；突发度 = 相对过去N天基线的提升倍数；NEW = 基线窗口内从未出现的新词；炒作浓度 = 该词出现在A股炒作语境（涨停/概念/题材/产业链/订单/股票代码等）快讯中的占比，闸口开启时按浓度过滤并加权。</div>
+<div class="footer">FinHot · 热度 = 当日提及该词的快讯条数；突发度 = 相对过去N天基线的提升倍数；NEW = 基线窗口内从未出现的新词；炒作浓度 = 该词出现在A股炒作语境（涨停/概念/题材/产业链/订单/股票代码等）快讯中的占比，闸口开启时按浓度过滤并加权。<br>准入漏斗：入库每条按 0.30影响力+0.35相关性+0.20新鲜度−0.15重复度 打分，≥0.45 才<b>准入</b>计入热度；<b>去重</b>=72h 内跨源近重复并入代表；<b>存档</b>=低分留底不计统计（详情页可见每条入库分与「存档」标记）。</div>
 <script>
 const $ = s => document.querySelector(s);
-let state = { day: '', baseline: 7, gate: 1, board: 'industry', active: null };
+let state = { day: '', baseline: 7, gate: 1, board: 'industry', active: null, funnel: {} };
 
 function spark(trend, w = 120, h = 26, color = '#38bdf8') {
   const max = Math.max(...trend, 1);
@@ -127,7 +132,11 @@ async function loadBoard() {
   if (state.day) q.set('day', state.day);
   const data = await (await fetch('/api/hotwords?' + q)).json();
   state.day = data.day;
-  $('#statLine').textContent = `${data.day} · 当日快讯 ${data.total_items} 条 · 候选热词 ${data.hotwords.length}+`;
+  const fn = state.funnel[data.day];
+  const funnelTxt = fn
+    ? ` · <span class="funnel admit">准入 <b>${fn.admitted}</b></span> · <span class="funnel">去重 <b>${fn.deduped}</b></span> · <span class="funnel">存档 <b>${fn.archived}</b></span>`
+    : '';
+  $('#statLine').innerHTML = `${data.day} · 当日快讯 ${data.total_items} 条${funnelTxt} · 候选热词 ${data.hotwords.length}+`;
   $('#list').innerHTML = data.hotwords.map((w, i) => `
     <div class="row" data-term="${encodeURIComponent(w.term)}">
       <div class="rank ${i < 3 ? 'top' : ''}">${i + 1}</div>
@@ -159,6 +168,8 @@ async function showDetail(term, rowEl) {
       <div class="news-item">
         <span class="src">${it.source}</span>
         <span class="time">${new Date(it.ts * 1000).toLocaleString('zh-CN')}</span>
+        ${typeof it.score === 'number' ? `<span class="iscore" title="入库打分（0.30影响力+0.35相关性+0.20新鲜度−0.15重复度）">分 ${it.score}</span>` : ''}
+        ${it.admitted === 0 ? '<span class="badge arch" title="低分存档，未计入热度统计">存档</span>' : ''}
         ${(it.related && it.related.length) ? `<span class="src" title="${it.related.map(r => r.source).join('、')}">+${it.related.length} 同事件</span>` : ''}
         <div class="txt"><a href="${it.url}" target="_blank" rel="noopener">${it.title ? `<b>${hl(it.title)}</b> ` : ''}${hl(it.content || '')}</a></div>
       </div>`).join('')}</div>`;
@@ -166,6 +177,8 @@ async function showDetail(term, rowEl) {
 
 async function initDays() {
   const stats = await (await fetch('/api/stats')).json();
+  state.funnel = {};
+  stats.by_day.forEach(d => { state.funnel[d.day] = d; });
   $('#daySel').innerHTML = stats.by_day.map(d => `<option value="${d.day}">${d.day}（${d.count}条）</option>`).join('');
 }
 
