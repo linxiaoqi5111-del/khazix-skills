@@ -23,7 +23,8 @@
    - **产业题材榜**：白名单题材词（液冷/CPO/HBM/低空经济…）加权 ×1.5，未知新词（如「六氟化钨」）×1.0 保留新词发现能力，地缘词默认 ×0.3（同语境命中油气/军工/航运/黄金等关联词时恢复 ×1.0），实体词与事件词不进产业榜
    - **催化事件榜**：制裁/关税/轰炸/降息/扩产等事件词 + 地缘词，作为事件触发器单独展示
    - **实体异动榜**：公司/人物实体不直接当题材，通过映射表展示关联题材（如 SpaceX → 商业航天/卫星互联网）
-7. **看板**：三榜 tab 切换（产业题材 / 催化事件 / 实体异动），带迷你趋势线、炒作浓度、闸口开关；点击热词查看历史趋势图与相关快讯原文。
+7. **入库打分与准入**（Phase 1 内核，见 `app/scoring.py`）：过滤从查询期前移到入库期。每条快讯入库时即按 `0.30·影响力 + 0.35·相关性 + 0.20·新鲜度 − 0.15·重复度` 打分，≥0.45 才**准入**（admitted）计入热度统计，低分**存档**不丢；跨源近重复（72h 窗口字符二元组 Jaccard）合并到代表条（**去重**）。`score_parts` 存归一因子值，改权重/阈值后跑 `python recount.py --rescore` 可零丢失重算历史。
+8. **看板**：三榜 tab 切换（产业题材 / 催化事件 / 实体异动），带迷你趋势线、炒作浓度、闸口开关；工具栏展示当日**准入漏斗**（准入 / 去重 / 存档）；点击热词查看历史趋势图、相关快讯原文及**每条入库打分与「存档」标记**。
 
 ## 快速开始
 
@@ -46,8 +47,32 @@ python -m app.collector --loop 30
 | 端点 | 说明 |
 |------|------|
 | `GET /api/hotwords?day=&baseline=7&limit=50&gate=1&min_spec_ratio=0.4&board=industry` | 热词榜（board=industry/event/entity 三榜；gate=0 关闭闸口看全部热词） |
-| `GET /api/term/{term}?day=` | 单词详情：历史曲线 + 相关快讯 |
-| `GET /api/stats` | 各源条数、各日条数统计 |
+| `GET /api/term/{term}?day=` | 单词详情：历史曲线 + 相关快讯（含每条入库分 `score`、`admitted`） |
+| `GET /api/stats` | 各源条数、各日条数 + 准入漏斗（`admitted`/`archived`/`deduped`） |
+| `GET /feed/hot.json?day=&baseline=7&limit=30&gate=1&min_spec_ratio=0.4` | 机器可读热榜：三榜合一 + 元信息，供下游聚合/播报 |
+| `GET /feed/brief.json` / `GET /feed/brief.md` | 规则简报：导语 + 三段榜单（结构化 / Markdown 文本） |
+
+### JSON Feed 与规则简报
+
+`/feed/hot.json` 把三榜与元信息（生成时刻、当日条数、参数回显）打成一个 JSON，便于自动播报、二次聚合或外部消费——与看板 `/api/hotwords` 同源同算法（共用 `app/board.py`）。
+
+规则简报**纯规则、无模型**（`app/brief.py`）：把「什么值得看」编码成显式阈值与标签——突发倍数 ≥3 标 `突发×N`、基线内新词标 `NEW`、产业词炒作浓度 ≥0.6 标 `高浓度`，并生成一句导语。Markdown 简报也可直接命令行产出（便于 cron/自动播报）：
+
+```bash
+python -m app.brief    # 打印当日 Markdown 简报到 stdout
+```
+
+### 导入 OPML / feeds.json
+
+从任意 RSS 阅读器（Feedly/Inoreader/FreshRSS…）导出 OPML，一条命令把订阅迁进 `watchlist.json` 的 `rss` 列表（按 URL 去重，支持 `--dry-run` 预览、多文件、`--out` 指定目标）：
+
+```bash
+python -m app.feeds_import feeds.opml            # 合并进默认 watchlist.json
+python -m app.feeds_import feeds.opml --dry-run  # 只预览不写盘
+python -m app.feeds_import a.opml b.json --out wl.json
+```
+
+支持 OPML(.opml/.xml) 与多形态 feeds.json（原生 `[{name,url}]` / 整个 watchlist.json / OPML 转 JSON / 名称→URL 映射）。
 
 ## 扩展数据源
 
