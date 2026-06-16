@@ -100,7 +100,7 @@ def term_detail(term: str, day: str = "", limit: int = Query(30, ge=1, le=100)):
     rows = [
         dict(r)
         for r in conn.execute(
-            "SELECT source, title, content, url, ts, event_id FROM items "
+            "SELECT source, title, content, url, ts, event_id, score, admitted FROM items "
             "WHERE day=? AND (title LIKE ? OR content LIKE ?) ORDER BY ts DESC LIMIT ?",
             (day, f"%{term}%", f"%{term}%", limit),
         )
@@ -126,8 +126,13 @@ def stats():
     by_source = [dict(r) for r in conn.execute(
         "SELECT source, COUNT(*) AS count FROM items GROUP BY source ORDER BY count DESC"
     )]
+    # 准入漏斗：入库总数 → 准入代表（admitted=1 且非去重从属）/ 去重从属 / 低分存档
     days = [dict(r) for r in conn.execute(
-        "SELECT day, COUNT(*) AS count FROM items GROUP BY day ORDER BY day DESC LIMIT 30"
+        "SELECT day, COUNT(*) AS count, "
+        "SUM(CASE WHEN admitted=1 AND dup_group IS NULL THEN 1 ELSE 0 END) AS admitted, "
+        "SUM(CASE WHEN admitted=0 THEN 1 ELSE 0 END) AS archived, "
+        "SUM(CASE WHEN dup_group IS NOT NULL THEN 1 ELSE 0 END) AS deduped "
+        "FROM items GROUP BY day ORDER BY day DESC LIMIT 30"
     )]
     conn.close()
     return {"by_source": by_source, "by_day": days}
