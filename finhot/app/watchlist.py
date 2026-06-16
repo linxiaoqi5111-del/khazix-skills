@@ -159,9 +159,13 @@ def fetch_xueqiu_user(user_id):
 
 
 def _parse_pubdate(pub):
-    """兼容 RFC822 和 '2026-06-11 19:00:00 +0800' 等变体。"""
+    """兼容 RFC822 和 '2026-06-11 19:00:00 +0800' 等变体。
+
+    缺失或解析失败时返回 0（"无可信时间"哨兵），交由 timefix 锚定 first_seen，
+    不再无脑当成入库当下时间而污染突发归日。
+    """
     if not pub:
-        return int(time.time())
+        return 0
     try:
         return int(email.utils.parsedate_to_datetime(pub).timestamp())
     except Exception:  # noqa: BLE001
@@ -169,7 +173,7 @@ def _parse_pubdate(pub):
     try:
         return int(time.mktime(time.strptime(" ".join(pub.split()), "%Y-%m-%d %H:%M:%S %z")))
     except Exception:  # noqa: BLE001
-        return int(time.time())
+        return 0
 
 
 def fetch_rss(url, source_name):
@@ -256,7 +260,7 @@ def fetch_x_user(user):
                 if "/status/" in link:
                     link = "https://x.com/" + link.split("://", 1)[-1].split("/", 1)[-1].split("#", 1)[0]
                 pub = it.findtext("pubDate")
-                ts = int(email.utils.parsedate_to_datetime(pub).timestamp()) if pub else int(time.time())
+                ts = int(email.utils.parsedate_to_datetime(pub).timestamp()) if pub else 0
                 out.append({
                     "id": _mkid("x", link or it.findtext("guid") or ""),
                     "source": f"X@{user}",

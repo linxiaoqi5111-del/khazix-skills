@@ -18,4 +18,5 @@ CLAUDE.md
 
 # FinHot local data
 finhot/data/
+finhot/.venv/
 __pycache__/

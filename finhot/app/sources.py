@@ -65,7 +65,7 @@ def fetch_eastmoney(pages=3):
         sort_end = data.get("sortEnd", "")
         for it in data.get("fastNewsList", []):
             t = it.get("showTime", "")
-            ts = int(time.mktime(time.strptime(t, "%Y-%m-%d %H:%M:%S"))) if t else int(time.time())
+            ts = int(time.mktime(time.strptime(t, "%Y-%m-%d %H:%M:%S"))) if t else 0
             out.append({
                 "id": _mkid("em", it["code"]),
                 "source": "东方财富快讯",
@@ -113,7 +113,7 @@ def fetch_10jqka(pages=3):
                 "title": _strip_html(it.get("title", "")),
                 "content": _strip_html(it.get("digest", "")),
                 "url": it.get("url", "https://news.10jqka.com.cn/realtimenews.html"),
-                "ts": int(it.get("rtime") or it.get("ctime") or time.time()),
+                "ts": int(it.get("rtime") or it.get("ctime") or 0),
             })
     return out
 
@@ -162,7 +162,7 @@ def fetch_cls(pages=3, rn=30):
         if not rows:
             break
         for it in rows:
-            ts = int(it.get("ctime") or time.time())
+            ts = int(it.get("ctime") or 0)
             out.append({
                 "id": _mkid("cls", it["id"]),
                 "source": "财联社",
