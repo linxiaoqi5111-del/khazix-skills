@@ -126,6 +126,9 @@ export const ByokProviderModalContent = ({
       ...formData,
       baseURL: formData.baseURL || getProviderDefaultBaseURL(formData.provider) || null,
       model: formData.model || getProviderDefaultModel(formData.provider) || null,
+      // Convert empty string to null so API key validation works correctly
+      // Empty string is falsy but not null, causing issues with the !! check
+      apiKey: formData.apiKey?.trim() || null,
     })
   }
 

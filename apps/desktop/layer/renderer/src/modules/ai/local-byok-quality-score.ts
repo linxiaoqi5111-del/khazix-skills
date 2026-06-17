@@ -4,9 +4,9 @@ import type { QualityScoreGenerator, QualityScoreGeneratorInput } from "@follow/
 
 import { getAISettings } from "~/atoms/settings/ai"
 import { fetchYouTubeTranscript } from "~/lib/fetch-youtube-transcript"
-import { getAIModelState } from "~/modules/ai-chat/atoms/session"
 import {
   getProviderOption,
+  getSafeTemperature,
   resolveConfiguredByokProvider,
 } from "~/modules/settings/tabs/ai/byok/constants"
 
@@ -216,8 +216,9 @@ export const generateLocalByokQualityScore: QualityScoreGenerator = async (input
     }
   }
 
-  const { selectedModel } = getAIModelState()
-  const resolvedProvider = resolveConfiguredByokProvider(getAISettings().byok, selectedModel)
+  // For automatic enrichment (summary/tags/score), always use the BYOK provider
+  // currently configured in Settings, independent of the chat's selectedModel.
+  const resolvedProvider = resolveConfiguredByokProvider(getAISettings().byok)
 
   if (!resolvedProvider) {
     throw new Error(
@@ -243,7 +244,7 @@ export const generateLocalByokQualityScore: QualityScoreGenerator = async (input
         { role: "system", content: SYSTEM_PROMPT },
         { role: "user", content: buildUserPrompt(source, outputLanguageLabel) },
       ],
-      temperature: 0.1,
+      temperature: getSafeTemperature(resolvedProvider.provider.provider, 0.1),
       stream: false,
     },
   })

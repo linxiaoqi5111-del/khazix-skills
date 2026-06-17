@@ -7,10 +7,12 @@ import { toast } from "sonner"
 
 import { getAISettings, setAISetting, useAISettingValue } from "~/atoms/settings/ai"
 import { useDialog, useModalStack } from "~/components/ui/modal/stacked/hooks"
+import { getAIModelState, setAIModelState } from "~/modules/ai-chat/atoms/session"
 
 import { ByokProcessingSection } from "../background-processing"
 import { ByokProviderItem } from "./ByokProviderItem"
 import { ByokProviderModalContent } from "./ByokProviderModalContent"
+import { buildLocalByokAIConfiguration } from "./constants"
 
 export const ByokSection = () => {
   const { t } = useTranslation("ai")
@@ -19,11 +21,31 @@ export const ByokSection = () => {
   const { present } = useModalStack()
   const { ask } = useDialog()
 
+  /**
+   * After the user configures or removes a BYOK provider in settings,
+   * make sure the globally persisted selectedModel (used by summary/score/chat etc.)
+   * points to a valid current BYOK model. This prevents stale "deepseek/xxx" (or other)
+   * references from making resolveConfiguredByokProvider() return null.
+   */
+  const syncSelectedModelToCurrentByok = () => {
+    const { byok } = getAISettings()
+    const config = buildLocalByokAIConfiguration(byok)
+    if (!config.defaultModel) return
+
+    const { selectedModel } = getAIModelState()
+    if (!selectedModel || !config.availableModels.includes(selectedModel)) {
+      setAIModelState({ selectedModel: config.defaultModel })
+    }
+  }
+
   const handleToggleEnabled = (enabled: boolean) => {
     setAISetting("byok", {
       ...byok,
       enabled,
     })
+    if (enabled) {
+      syncSelectedModelToCurrentByok()
+    }
   }
 
   const handleAddProvider = () => {
@@ -44,6 +66,7 @@ export const ByokSection = () => {
               providers: [provider],
             })
             toast.success(t("byok.providers.added"))
+            syncSelectedModelToCurrentByok()
             dismiss()
           }}
           onCancel={dismiss}
@@ -75,6 +98,7 @@ export const ByokSection = () => {
               providers: [updatedProvider],
             })
             toast.success(t("byok.providers.updated"))
+            syncSelectedModelToCurrentByok()
             dismiss()
           }}
           onCancel={dismiss}
@@ -100,6 +124,7 @@ export const ByokSection = () => {
         providers: updatedProviders,
       })
       toast.success(t("byok.providers.deleted"))
+      syncSelectedModelToCurrentByok()
     }
   }
 

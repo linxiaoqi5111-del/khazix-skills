@@ -268,6 +268,8 @@ export type ByokProviderName =
   | "groq"
   | "vercel-ai-gateway"
   | "openrouter"
+  | "siliconflow"
+  | "custom"
 
 export type UserByokProviderConfig = {
   provider: ByokProviderName

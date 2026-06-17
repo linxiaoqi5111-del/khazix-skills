@@ -35,6 +35,8 @@ export const PROVIDER_ICON_CLASS_NAMES = {
   groq: "i-focal-groq",
   "vercel-ai-gateway": "i-focal-vercel",
   openrouter: "i-focal-openrouter",
+  siliconflow: "i-focal-ai",
+  custom: "i-focal-settings-3",
 } satisfies Record<ByokProviderName, string>
 
 export const PROVIDER_OPTIONS: ByokProviderOption[] = [
@@ -218,6 +220,32 @@ export const PROVIDER_OPTIONS: ByokProviderOption[] = [
     apiFormat: "openai-compatible",
     requiresApiKey: true,
   },
+  {
+    value: "siliconflow",
+    label: "SiliconFlow (硅基流动)",
+    defaultBaseURL: "https://api.siliconflow.cn/v1",
+    defaultModel: "deepseek-ai/DeepSeek-V3",
+    models: [
+      "deepseek-ai/DeepSeek-V3",
+      "deepseek-ai/DeepSeek-R1",
+      "Qwen/Qwen3-235B-A22B",
+      "Qwen/Qwen3-32B",
+      "meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+    ],
+    iconClassName: PROVIDER_ICON_CLASS_NAMES.siliconflow,
+    apiFormat: "openai-compatible",
+    requiresApiKey: true,
+  },
+  {
+    value: "custom",
+    label: "Custom (自定义)",
+    defaultBaseURL: "",
+    defaultModel: "",
+    models: [],
+    iconClassName: PROVIDER_ICON_CLASS_NAMES.custom,
+    apiFormat: "openai-compatible",
+    requiresApiKey: true,
+  },
 ]
 
 export const getProviderOption = (providerName: ByokProviderName) =>
@@ -237,6 +265,13 @@ export const getProviderModelOptions = (providerName: ByokProviderName) =>
 
 export const isOpenAICompatibleProvider = (providerName: ByokProviderName) =>
   getProviderOption(providerName)?.apiFormat === "openai-compatible"
+
+// Some providers (e.g. certain Moonshot/Kimi models) only accept temperature=1.
+// Using other values causes "invalid temperature: only 1 is allowed for this model".
+const PROVIDERS_REQUIRING_TEMPERATURE_ONE = new Set<ByokProviderName>(["moonshot"])
+
+export const getSafeTemperature = (providerName: ByokProviderName, preferred: number): number =>
+  PROVIDERS_REQUIRING_TEMPERATURE_ONE.has(providerName) ? 1 : preferred
 
 export const getConfiguredProviderModel = (provider: UserByokProviderConfig) =>
   provider.model || getProviderDefaultModel(provider.provider)
@@ -266,25 +301,36 @@ export const getOpenAICompatibleConfiguredProviders = (byok: UserByokSettings | 
 
   return byok.providers.filter((provider) => {
     const providerOption = getProviderOption(provider.provider)
+    // Check if API key is present and not empty (handle both null and empty string)
+    const hasApiKey = !!provider.apiKey && provider.apiKey.trim() !== ""
     return (
       !!providerOption &&
       isOpenAICompatibleProvider(provider.provider) &&
-      (!providerOption.requiresApiKey || !!provider.apiKey)
+      (!providerOption.requiresApiKey || hasApiKey)
     )
   })
 }
 
 export const resolveConfiguredByokProvider = (
   byok: UserByokSettings | undefined,
-  selectedModel: string | null | undefined,
+  selectedModel?: string | null | undefined,
 ) => {
   const configuredProviders = getOpenAICompatibleConfiguredProviders(byok)
   if (configuredProviders.length === 0) return null
 
   const parsedModel = parseByokModelValue(selectedModel)
-  const provider = parsedModel
+
+  // Try to match the provider name from selectedModel if it looks like a byok value.
+  // If no match (e.g. stale selectedModel after user switched the BYOK provider in settings),
+  // fall back to the first currently configured provider. This makes provider switching robust
+  // for background tasks (summary, quality score, etc.) that read the persisted selectedModel.
+  let provider = parsedModel
     ? configuredProviders.find((item) => item.provider === parsedModel.providerName)
-    : configuredProviders[0]
+    : null
+
+  if (!provider) {
+    provider = configuredProviders[0]
+  }
 
   if (!provider) return null
 
@@ -293,7 +339,10 @@ export const resolveConfiguredByokProvider = (
     providerLabel: getProviderLabel(provider.provider),
     baseURL: provider.baseURL || getProviderDefaultBaseURL(provider.provider),
     apiKey: provider.apiKey,
-    model: parsedModel?.model || getConfiguredProviderModel(provider),
+    model:
+      parsedModel && provider.provider === parsedModel.providerName
+        ? parsedModel.model
+        : getConfiguredProviderModel(provider),
   }
 }
 

@@ -54,6 +54,9 @@ export const EmbeddingProviderModalContent = ({
       baseURL: defaults.baseURL,
       model: defaults.model,
       dimension: defaults.dimension,
+      // Preserve the existing API key when switching presets
+      // so users don't have to re-enter it when switching between providers
+      apiKey: prev.apiKey,
     }))
   }
 
@@ -64,6 +67,9 @@ export const EmbeddingProviderModalContent = ({
       baseURL: formData.baseURL || selectedPreset?.defaultBaseURL || "",
       model: formData.model || selectedPreset?.defaultModel || "",
       dimension: formData.dimension || selectedPreset?.dimension || 1024,
+      // Convert empty string to null so API key validation works correctly
+      // Empty string is falsy but not null, causing issues with the !! check
+      apiKey: formData.apiKey?.trim() || null,
     })
   }
 

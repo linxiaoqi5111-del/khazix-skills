@@ -6,9 +6,9 @@ import {
 import type { TagGenerator } from "@follow/store/context"
 
 import { getAISettings } from "~/atoms/settings/ai"
-import { getAIModelState } from "~/modules/ai-chat/atoms/session"
 import {
   getProviderOption,
+  getSafeTemperature,
   resolveConfiguredByokProvider,
 } from "~/modules/settings/tabs/ai/byok/constants"
 
@@ -59,8 +59,9 @@ export const generateLocalByokTags: TagGenerator = async (input) => {
     return { tags: [] }
   }
 
-  const { selectedModel } = getAIModelState()
-  const resolvedProvider = resolveConfiguredByokProvider(getAISettings().byok, selectedModel)
+  // For automatic enrichment (summary/tags/score), always use the BYOK provider
+  // currently configured in Settings, independent of the chat's selectedModel.
+  const resolvedProvider = resolveConfiguredByokProvider(getAISettings().byok)
 
   if (!resolvedProvider) {
     throw new Error(
@@ -118,7 +119,7 @@ Entry:
 ${source}`,
         },
       ],
-      temperature: 0.1,
+      temperature: getSafeTemperature(resolvedProvider.provider.provider, 0.1),
       stream: false,
     },
   })

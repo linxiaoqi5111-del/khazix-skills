@@ -7,9 +7,9 @@ import type {
 } from "@follow/store/context"
 
 import { getAISettings } from "~/atoms/settings/ai"
-import { getAIModelState } from "~/modules/ai-chat/atoms/session"
 import {
   getProviderOption,
+  getSafeTemperature,
   resolveConfiguredByokProvider,
 } from "~/modules/settings/tabs/ai/byok/constants"
 
@@ -44,8 +44,8 @@ const requestByokTranslation = async ({
   field: TranslationGeneratorField
   actionLanguage: SupportedActionLanguage
 }) => {
-  const { selectedModel } = getAIModelState()
-  const resolvedProvider = resolveConfiguredByokProvider(getAISettings().byok, selectedModel)
+  // For automatic enrichment, always use the BYOK provider currently configured in Settings.
+  const resolvedProvider = resolveConfiguredByokProvider(getAISettings().byok)
 
   if (!resolvedProvider) {
     throw new Error(
@@ -76,7 +76,7 @@ const requestByokTranslation = async ({
           content: `${getFieldInstruction(field)} Translate into ${languageLabel}.\n\n${source.slice(0, MAX_TRANSLATION_SOURCE_LENGTH)}`,
         },
       ],
-      temperature: 0.2,
+      temperature: getSafeTemperature(resolvedProvider.provider.provider, 0.2),
       stream: false,
     },
   })

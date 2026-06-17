@@ -2,9 +2,9 @@ import { ACTION_LANGUAGE_MAP } from "@follow/shared/language"
 import type { SummaryGenerator } from "@follow/store/context"
 
 import { getAISettings } from "~/atoms/settings/ai"
-import { getAIModelState } from "~/modules/ai-chat/atoms/session"
 import {
   getProviderOption,
+  getSafeTemperature,
   resolveConfiguredByokProvider,
 } from "~/modules/settings/tabs/ai/byok/constants"
 
@@ -44,8 +44,9 @@ export const generateLocalByokSummary: SummaryGenerator = async (input) => {
   const source = buildSummarySource(input)
   if (!source.trim()) return null
 
-  const { selectedModel } = getAIModelState()
-  const resolvedProvider = resolveConfiguredByokProvider(getAISettings().byok, selectedModel)
+  // For automatic enrichment (summary/tags/score), always use the BYOK provider
+  // currently configured in Settings, independent of the chat's selectedModel.
+  const resolvedProvider = resolveConfiguredByokProvider(getAISettings().byok)
 
   if (!resolvedProvider) {
     throw new Error(
@@ -76,7 +77,7 @@ export const generateLocalByokSummary: SummaryGenerator = async (input) => {
           content: `Summarize the following entry in ${languageLabel}. Keep the summary under 180 words unless the content requires brief bullet points.\n\n${source}`,
         },
       ],
-      temperature: 0.2,
+      temperature: getSafeTemperature(resolvedProvider.provider.provider, 0.2),
       stream: false,
     },
   })
