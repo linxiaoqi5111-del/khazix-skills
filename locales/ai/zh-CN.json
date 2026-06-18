@@ -136,6 +136,7 @@
   "byok_processing.updated.just_now": "刚刚更新",
   "chat.history.auto_title": "{{- datetime}} 聊天",
   "chat.history.delete": "删除聊天",
+  "chat.history.switch_error": "无法打开对话",
   "chat.history.title": "聊天历史",
   "chat.history.unread": "未读",
   "chat.history.unread_messages": "未读消息",

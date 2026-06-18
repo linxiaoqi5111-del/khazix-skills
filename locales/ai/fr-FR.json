@@ -62,6 +62,7 @@
   "byok.title": "Bring Your Own Key (BYOK)",
   "chat.history.auto_title": "Discussion du {{- datetime}}",
   "chat.history.delete": "Supprimer la discussion",
+  "chat.history.switch_error": "Impossible d'ouvrir la discussion",
   "chat.history.title": "Historique des discussions",
   "chat.history.unread": "Non lu",
   "chat.history.unread_messages": "Messages non lus",

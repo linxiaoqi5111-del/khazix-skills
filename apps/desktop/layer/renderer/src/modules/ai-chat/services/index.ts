@@ -407,7 +407,6 @@ class AIPersistServiceStatic {
       }
 
       if (shouldUpdate) {
-        updates.updatedAt = new Date()
         await db.update(aiChatTable).set(updates).where(eq(aiChatTable.chatId, chatId))
       }
       return
@@ -471,6 +470,23 @@ class AIPersistServiceStatic {
     return result?.chatId ? result : null
   }
 
+  private async getLastMessageDates(chatIds: string[]) {
+    if (chatIds.length === 0) {
+      return new Map<string, Date>()
+    }
+
+    const rows = await db.values<[string, Date]>(
+      sql`
+        SELECT ${aiChatMessagesTable.chatId}, MAX(${aiChatMessagesTable.createdAt})
+        FROM ${aiChatMessagesTable}
+        WHERE ${inArray(aiChatMessagesTable.chatId, chatIds)}
+        GROUP BY ${aiChatMessagesTable.chatId}
+      `,
+    )
+
+    return new Map(rows.map(([chatId, lastActivityAt]) => [chatId, new Date(lastActivityAt)]))
+  }
+
   async getChatSessions(limit = 20) {
     const chats = await db.query.aiChatTable.findMany({
       columns: {
@@ -487,6 +503,8 @@ class AIPersistServiceStatic {
     if (chats.length === 0) {
       return []
     }
+
+    const lastMessageDates = await this.getLastMessageDates(chats.map((chat) => chat.chatId))
 
     const normalizedChats = await Promise.all(
       chats.map(async (chat) => {
@@ -520,12 +538,14 @@ class AIPersistServiceStatic {
     return normalizedChats.map((chat) => {
       const isLocal = Boolean(chat.isLocal)
       const syncStatus: "local" | "synced" = isLocal ? "local" : "synced"
+      const lastActivityAt = lastMessageDates.get(chat.chatId) ?? chat.updatedAt
 
       return {
         chatId: chat.chatId,
         title: chat.title,
         createdAt: chat.createdAt,
         updatedAt: chat.updatedAt,
+        lastActivityAt,
         isLocal,
         syncStatus,
       }
@@ -539,14 +559,22 @@ class AIPersistServiceStatic {
     this.clearSessionCache(chatId)
   }
 
-  async updateSessionTitle(chatId: string, title: string) {
-    await db
-      .update(aiChatTable)
-      .set({
-        title,
-        updatedAt: new Date(Date.now()),
-      })
-      .where(eq(aiChatTable.chatId, chatId))
+  async updateSessionTitle(
+    chatId: string,
+    title: string,
+    options: { touchUpdatedAt?: boolean } = {},
+  ) {
+    const existing = await this.getChatSession(chatId)
+    if (existing?.title === title) {
+      return
+    }
+
+    const updates: Partial<typeof aiChatTable.$inferInsert> = { title }
+    if (options.touchUpdatedAt) {
+      updates.updatedAt = new Date()
+    }
+
+    await db.update(aiChatTable).set(updates).where(eq(aiChatTable.chatId, chatId))
   }
 
   async updateSessionTime(chatId: string, date: Date = new Date()) {

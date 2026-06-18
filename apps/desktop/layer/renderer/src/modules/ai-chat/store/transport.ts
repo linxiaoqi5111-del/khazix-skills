@@ -370,7 +370,9 @@ class ExtendChatTransport extends HttpChatTransport<BizUIMessage> {
       }
 
       if (titleHandler.chatId) {
-        await AIPersistService.updateSessionTitle(titleHandler.chatId, chunk.data)
+        await AIPersistService.updateSessionTitle(titleHandler.chatId, chunk.data, {
+          touchUpdatedAt: true,
+        })
       }
     } catch (error) {
       console.error("Failed to persist generated title:", error)

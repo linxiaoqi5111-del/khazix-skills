@@ -4,34 +4,48 @@ import { toast } from "sonner"
 
 import { useDialog } from "~/components/ui/modal/stacked/hooks"
 import { useTimelineSummaryAutoContext } from "~/modules/ai-chat/hooks/useTimelineSummaryAutoContext"
-import { AIPersistService } from "~/modules/ai-chat/services"
-import { useChatActions, useCurrentChatId } from "~/modules/ai-chat/store/hooks"
+import { useBlockActions, useChatActions, useCurrentChatId } from "~/modules/ai-chat/store/hooks"
 import type { ChatSession } from "~/modules/ai-chat/types/ChatSession"
+import { AIChatSessionService } from "~/modules/ai-chat-session/service"
 
 export interface UseChatSessionHandlersProps {
   sessions?: ChatSession[]
+  onSessionSelected?: () => void
 }
 
-export const useChatSessionHandlers = ({ sessions = [] }: UseChatSessionHandlersProps) => {
+export const useChatSessionHandlers = ({
+  sessions = [],
+  onSessionSelected,
+}: UseChatSessionHandlersProps) => {
   const { t } = useTranslation("ai")
   const chatActions = useChatActions()
+  const blockActions = useBlockActions()
   const currentChatId = useCurrentChatId()
   const shouldDisableTimelineSummary = useTimelineSummaryAutoContext()
   const { ask } = useDialog()
 
   const handleSessionSelect = useCallback(
-    async (session: ChatSession) => {
-      if (session.chatId === currentChatId) {
-        console.warn("Session already active, no action taken")
+    async (chatId: string) => {
+      onSessionSelected?.()
+
+      const activeChatId = chatActions.getCurrentChatId()
+      if (chatId === activeChatId) {
         return
       }
 
       if (shouldDisableTimelineSummary) {
         chatActions.setTimelineSummaryManualOverride(true)
       }
-      chatActions.switchToChat(session.chatId)
+
+      try {
+        blockActions.clearBlocks({ keepSpecialTypes: true })
+        await chatActions.switchToChat(chatId)
+      } catch (error) {
+        console.error("Failed to switch to chat:", error)
+        toast.error(t("chat.history.switch_error"))
+      }
     },
-    [chatActions, currentChatId, shouldDisableTimelineSummary],
+    [blockActions, chatActions, onSessionSelected, shouldDisableTimelineSummary, t],
   )
 
   const handleDeleteSession = useCallback(
@@ -60,7 +74,7 @@ export const useChatSessionHandlers = ({ sessions = [] }: UseChatSessionHandlers
       options.onBeforeDelete?.()
 
       try {
-        await AIPersistService.deleteSession(chatId)
+        await AIChatSessionService.deleteSession(chatId)
 
         toast.success(t("delete_chat_success"))
 
@@ -68,14 +82,15 @@ export const useChatSessionHandlers = ({ sessions = [] }: UseChatSessionHandlers
           if (shouldDisableTimelineSummary) {
             chatActions.setTimelineSummaryManualOverride(true)
           }
-          chatActions.newChat()
+          blockActions.clearBlocks({ keepSpecialTypes: true })
+          await chatActions.newChat()
         }
       } catch (error) {
         console.error("Failed to delete session:", error)
         toast.error(t("delete_chat_error"))
       }
     },
-    [sessions, ask, t, currentChatId, chatActions, shouldDisableTimelineSummary],
+    [sessions, ask, t, currentChatId, chatActions, blockActions, shouldDisableTimelineSummary],
   )
 
   return {

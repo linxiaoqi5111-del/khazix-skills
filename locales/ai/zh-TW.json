@@ -62,6 +62,7 @@
   "byok.title": "自帶金鑰 (BYOK)",
   "chat.history.auto_title": "{{- datetime}} 聊天",
   "chat.history.delete": "刪除聊天",
+  "chat.history.switch_error": "無法開啟對話",
   "chat.history.title": "聊天記錄",
   "chat.history.unread": "未讀",
   "chat.history.unread_messages": "未讀訊息",

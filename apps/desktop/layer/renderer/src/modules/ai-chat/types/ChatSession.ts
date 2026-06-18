@@ -5,6 +5,8 @@ export interface ChatSession {
   title?: string
   createdAt: Date
   updatedAt: Date
+  /** Last message timestamp; preferred for history list display */
+  lastActivityAt?: Date
   isLocal: boolean
   syncStatus: "local" | "synced"
 }

@@ -195,7 +195,9 @@ export class ChatSliceActions {
       this.setCurrentTitle(trimmedTitle)
 
       // Persist to database
-      await AIPersistService.updateSessionTitle(currentChatId, trimmedTitle)
+      await AIPersistService.updateSessionTitle(currentChatId, trimmedTitle, {
+        touchUpdatedAt: true,
+      })
     } catch (error) {
       // Rollback on error
       this.setCurrentTitle(currentTitle)

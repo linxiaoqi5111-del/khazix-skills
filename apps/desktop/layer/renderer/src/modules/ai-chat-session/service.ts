@@ -9,6 +9,11 @@ class AIChatSessionServiceStatic {
     return rows
   }
 
+  async deleteSession(chatId: string) {
+    await AIPersistService.deleteSession(chatId)
+    aiChatSessionStoreActions.removeSession(chatId)
+  }
+
   async syncSessionMessages(chatId: string) {
     try {
       return AIPersistService.loadUIMessages(chatId)

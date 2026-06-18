@@ -40,6 +40,10 @@ export const aiChatSessionStoreActions = {
     setState({
       sessions,
     }),
+  removeSession: (chatId: string) =>
+    setState((state) => ({
+      sessions: state.sessions.filter((session) => session.chatId !== chatId),
+    })),
   setLoading: (isLoading: boolean) =>
     setState({
       isLoading,

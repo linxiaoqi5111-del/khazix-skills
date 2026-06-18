@@ -136,6 +136,7 @@
   "byok_processing.updated.just_now": "たった今更新",
   "chat.history.auto_title": "{{- datetime}} のチャット",
   "chat.history.delete": "チャットを削除",
+  "chat.history.switch_error": "チャットを開けませんでした",
   "chat.history.title": "チャット履歴",
   "chat.history.unread": "未読",
   "chat.history.unread_messages": "未読メッセージ",

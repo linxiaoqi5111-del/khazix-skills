@@ -92,7 +92,7 @@ export const generateAndUpdateChatTitle = async (
 
   if (title && chatId) {
     try {
-      await AIPersistService.updateSessionTitle(chatId, title)
+      await AIPersistService.updateSessionTitle(chatId, title, { touchUpdatedAt: true })
       onTitleUpdate?.(title)
       return title
     } catch (error) {

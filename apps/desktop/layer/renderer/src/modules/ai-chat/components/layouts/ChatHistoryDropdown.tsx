@@ -1,13 +1,9 @@
 import { ActionButton } from "@follow/components/ui/button/index.js"
+import { Popover, PopoverContent, PopoverTrigger } from "@follow/components/ui/popover/index.jsx"
 import type { ReactNode } from "react"
 import { startTransition, useCallback, useState } from "react"
 import { useTranslation } from "react-i18next"
 
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuTrigger,
-} from "~/components/ui/dropdown-menu/dropdown-menu"
 import { useChatHistory } from "~/modules/ai-chat/hooks/useChatHistory"
 
 import { EmptyState, isUnreadSession, SessionItem, useChatSessionHandlers } from "./shared"
@@ -22,6 +18,7 @@ export const ChatHistoryDropdown = ({
   asChild = true,
 }: ChatHistoryDropdownProps) => {
   const { t } = useTranslation("ai")
+  const [open, setOpen] = useState(false)
   const [loadingChatId, setLoadingChatId] = useState<string | null>(null)
   const { sessions, loading, loadHistory } = useChatHistory()
 
@@ -29,10 +26,12 @@ export const ChatHistoryDropdown = ({
 
   const { handleSessionSelect, handleDeleteSession } = useChatSessionHandlers({
     sessions,
+    onSessionSelected: () => setOpen(false),
   })
 
-  const handleDropdownOpen = useCallback(
+  const handleOpenChange = useCallback(
     (isOpen: boolean) => {
+      setOpen(isOpen)
       if (isOpen) {
         startTransition(() => {
           loadHistory()
@@ -55,11 +54,9 @@ export const ChatHistoryDropdown = ({
   )
 
   return (
-    <DropdownMenu onOpenChange={handleDropdownOpen}>
-      <DropdownMenuTrigger asChild={asChild}>
-        {triggerElement || defaultTrigger}
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-80">
+    <Popover open={open} onOpenChange={handleOpenChange}>
+      <PopoverTrigger asChild={asChild}>{triggerElement || defaultTrigger}</PopoverTrigger>
+      <PopoverContent align="start" className="z-[100] w-80 p-1">
         <div className="max-h-80 overflow-y-auto">
           {loading && sessions.length === 0 ? (
             <div className="flex items-center justify-center py-8">
@@ -74,7 +71,7 @@ export const ChatHistoryDropdown = ({
                 <SessionItem
                   key={session.chatId}
                   session={session}
-                  onClick={() => handleSessionSelect(session)}
+                  onClick={() => void handleSessionSelect(session.chatId)}
                   onDelete={(e) => {
                     handleDeleteSession(session.chatId, {
                       event: e,
@@ -91,7 +88,7 @@ export const ChatHistoryDropdown = ({
             <EmptyState message="No chat history yet" />
           )}
         </div>
-      </DropdownMenuContent>
-    </DropdownMenu>
+      </PopoverContent>
+    </Popover>
   )
 }

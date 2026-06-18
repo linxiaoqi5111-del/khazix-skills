@@ -136,6 +136,7 @@
   "byok_processing.updated.just_now": "Updated just now",
   "chat.history.auto_title": "{{- datetime}} chat",
   "chat.history.delete": "Delete chat",
+  "chat.history.switch_error": "Failed to open chat",
   "chat.history.title": "Chat history",
   "chat.history.unread": "Unread",
   "chat.history.unread_messages": "Unread messages",
