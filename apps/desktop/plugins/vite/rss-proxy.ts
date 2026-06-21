@@ -60,6 +60,36 @@ async function fetchViaDefuddle(url: string): Promise<string> {
   return response.text()
 }
 
+/**
+ * For localhost RSSHub routes that fail, extract the actual platform URL
+ * so we can try Jina as fallback on the real URL (not the localhost route).
+ */
+function extractPlatformUrl(rsshubUrl: string): string | null {
+  const match = rsshubUrl.match(/localhost:\d+\/(.+)/)
+  if (!match) return null
+  const path = match[1]!
+
+  // /weibo/user/{uid} → https://weibo.com/u/{uid}
+  const weiboUser = path.match(/^weibo\/user\/(\d+)/)
+  if (weiboUser) return `https://weibo.com/u/${weiboUser[1]}`
+
+  // /weibo/search/hot → https://s.weibo.com/top/summary
+  if (path === "weibo/search/hot") return "https://s.weibo.com/top/summary"
+
+  // /xueqiu/user/{uid} → https://xueqiu.com/u/{uid}
+  const xueqiuUser = path.match(/^xueqiu\/user\/(\d+)/)
+  if (xueqiuUser) return `https://xueqiu.com/u/${xueqiuUser[1]}`
+
+  // /xueqiu/hots → https://xueqiu.com/hots/topic
+  if (path.startsWith("xueqiu/hots")) return "https://xueqiu.com/hots/topic"
+
+  // /zhihu/people/activities/{id} → https://www.zhihu.com/people/{id}
+  const zhihuPeople = path.match(/^zhihu\/people\/activities\/(.+)/)
+  if (zhihuPeople) return `https://www.zhihu.com/people/${zhihuPeople[1]}`
+
+  return null
+}
+
 /** Helper to read POST body as JSON */
 async function readJsonBody(req: any): Promise<any> {
   const chunks: Buffer[] = []
@@ -120,17 +150,20 @@ export function rssProxyPlugin(): PluginOption {
           clearTimeout(timeout)
 
           if (!response.ok) {
-            // Fallback to Jina Reader on 5xx errors (only for external URLs)
-            const isLocal = /^https?:\/\/(?:localhost|127\.0\.0\.1)/i.test(url)
-            if (response.status >= 500 && !isLocal) {
-              const jinaContent = await fetchViaJina(url)
-              const fallbackResult = buildFallbackResult(url, jinaContent)
-              res.writeHead(200, {
-                "Content-Type": "application/json",
-                "Access-Control-Allow-Origin": "*",
-              })
-              res.end(JSON.stringify(fallbackResult))
-              return
+            if (response.status >= 500) {
+              // For localhost RSSHub routes, try Jina on the real platform URL
+              const isLocal = /^https?:\/\/(?:localhost|127\.0\.0\.1)/i.test(url)
+              const fallbackUrl = isLocal ? extractPlatformUrl(url) : url
+              if (fallbackUrl) {
+                const jinaContent = await fetchViaJina(fallbackUrl)
+                const fallbackResult = buildFallbackResult(url, jinaContent)
+                res.writeHead(200, {
+                  "Content-Type": "application/json",
+                  "Access-Control-Allow-Origin": "*",
+                })
+                res.end(JSON.stringify(fallbackResult))
+                return
+              }
             }
             throw new Error(`HTTP ${response.status}: ${response.statusText}`)
           }
@@ -145,11 +178,12 @@ export function rssProxyPlugin(): PluginOption {
           res.end(JSON.stringify(result))
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : "Unknown error"
-          // Only attempt Jina fallback for external URLs (not localhost RSSHub)
+          // Try Jina fallback: for localhost routes use real platform URL, otherwise use the URL directly
           const isLocal = /^https?:\/\/(?:localhost|127\.0\.0\.1)/i.test(url)
-          if (!isLocal) {
+          const fallbackUrl = isLocal ? extractPlatformUrl(url) : url
+          if (fallbackUrl) {
             try {
-              const jinaContent = await fetchViaJina(url)
+              const jinaContent = await fetchViaJina(fallbackUrl)
               const fallbackResult = buildFallbackResult(url, jinaContent)
               res.writeHead(200, {
                 "Content-Type": "application/json",
