@@ -16,8 +16,6 @@ interface Platform {
   placeholder: string
   hint: string
   buildUrl: (input: string) => string
-  /** If true, use Jina Reader (/api/jina/read) instead of RSSHub for content fetching */
-  useJina?: boolean
 }
 
 const PLATFORMS: Platform[] = [
@@ -42,9 +40,9 @@ const PLATFORMS: Platform[] = [
     label: "X / Twitter",
     icon: "⚫",
     placeholder: "输入用户名（如 elonmusk）",
-    hint: "通过 Jina Reader 读取（无需 Cookie）",
-    buildUrl: (handle: string) => `https://x.com/${handle.trim().replace(/^@/, "")}`,
-    useJina: true,
+    hint: "需要 RSSHub 配置 Twitter Cookie",
+    buildUrl: (handle: string) =>
+      `${LOCAL_RSSHUB_BASE}/twitter/user/${handle.trim().replace(/^@/, "")}`,
   },
   {
     id: "zhihu",
@@ -92,51 +90,6 @@ export function AddBloggerPanel({ onClose }: { onClose?: () => void }) {
     const url = selectedPlatform.buildUrl(trimmed)
 
     try {
-      if (selectedPlatform.useJina) {
-        // For Jina-backed platforms (X/Twitter), use the jina read endpoint
-        const res = await fetch("/api/jina/read", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url }),
-        })
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({ error: "Jina Reader failed" }))
-          throw new Error(err.error ?? `HTTP ${res.status}`)
-        }
-        const jinaResult = await res.json()
-        const title: string =
-          jinaResult.content
-            ?.split("\n")
-            .find((l: string) => l.trim())
-            ?.replace(/^#+\s*/, "")
-            .slice(0, 80) || `${selectedPlatform.label} - ${trimmed}`
-        const feedId = url.replaceAll(/[^a-z0-9]/gi, "").slice(0, 32)
-
-        await upsertLocalRssSubscription({
-          feed: {
-            id: feedId,
-            url,
-            title,
-            type: "feed" as const,
-          },
-          subscription: {
-            url,
-            view: FeedViewType.Articles,
-            category: "博主关注",
-            isPrivate: false,
-            hideFromTimeline: null,
-            title,
-            feedId,
-            listId: undefined,
-          },
-        })
-        setStatus("success")
-        setSuccessMsg(`已订阅：${title}`)
-        setInput("")
-        return
-      }
-
-      // Standard RSSHub path (with Jina fallback built into the proxy)
       const preview = await previewLocalRssFeed({ url })
       const feedData = preview.feed
 
@@ -159,11 +112,11 @@ export function AddBloggerPanel({ onClose }: { onClose?: () => void }) {
     } catch (error) {
       setStatus("error")
       const msg = error instanceof Error ? error.message : "订阅失败"
-      setErrorMsg(
-        msg.includes("503") || msg.includes("502")
-          ? `${selectedPlatform.label} 源暂时不可用（可能需要 Cookie 冷却），请稍后重试`
-          : msg,
-      )
+      if (msg.includes("503") || msg.includes("502") || msg.includes("451")) {
+        setErrorMsg(`${selectedPlatform.label} 源暂时不可用，需要在 RSSHub 配置对应平台的 Cookie`)
+      } else {
+        setErrorMsg(msg)
+      }
     }
   }, [input, selectedPlatform])
 

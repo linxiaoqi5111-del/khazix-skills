@@ -120,8 +120,9 @@ export function rssProxyPlugin(): PluginOption {
           clearTimeout(timeout)
 
           if (!response.ok) {
-            // Fallback to Jina Reader on 5xx errors
-            if (response.status >= 500) {
+            // Fallback to Jina Reader on 5xx errors (only for external URLs)
+            const isLocal = /^https?:\/\/(?:localhost|127\.0\.0\.1)/i.test(url)
+            if (response.status >= 500 && !isLocal) {
               const jinaContent = await fetchViaJina(url)
               const fallbackResult = buildFallbackResult(url, jinaContent)
               res.writeHead(200, {
@@ -143,21 +144,25 @@ export function rssProxyPlugin(): PluginOption {
           })
           res.end(JSON.stringify(result))
         } catch (error: unknown) {
-          // On any fetch error, attempt Jina fallback
-          try {
-            const jinaContent = await fetchViaJina(url)
-            const fallbackResult = buildFallbackResult(url, jinaContent)
-            res.writeHead(200, {
-              "Content-Type": "application/json",
-              "Access-Control-Allow-Origin": "*",
-            })
-            res.end(JSON.stringify(fallbackResult))
-          } catch (jinaError: unknown) {
-            const message = error instanceof Error ? error.message : "Unknown error"
-            const jinaMsg = jinaError instanceof Error ? jinaError.message : ""
-            res.writeHead(502, { "Content-Type": "application/json" })
-            res.end(JSON.stringify({ error: `${message} (Jina fallback also failed: ${jinaMsg})` }))
+          const message = error instanceof Error ? error.message : "Unknown error"
+          // Only attempt Jina fallback for external URLs (not localhost RSSHub)
+          const isLocal = /^https?:\/\/(?:localhost|127\.0\.0\.1)/i.test(url)
+          if (!isLocal) {
+            try {
+              const jinaContent = await fetchViaJina(url)
+              const fallbackResult = buildFallbackResult(url, jinaContent)
+              res.writeHead(200, {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*",
+              })
+              res.end(JSON.stringify(fallbackResult))
+              return
+            } catch {
+              // Jina also failed, fall through to error response
+            }
           }
+          res.writeHead(502, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: message }))
         }
       })
 
