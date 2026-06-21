@@ -51,8 +51,8 @@ export const getSettingPaidLevel = (namespace: string, key: string) => {
 }
 
 export const FOCAL_BRAND_ACCENT_COLOR = {
-  light: "#0054FC",
-  dark: "#0054FC",
+  light: "#E63946",
+  dark: "#FF6B6B",
 } as const
 
 export const getAccentColorValue = (_color: AccentColor) => {
