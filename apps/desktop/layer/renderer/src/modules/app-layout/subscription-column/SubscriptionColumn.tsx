@@ -27,6 +27,7 @@ import { useBatchUpdateSubscription } from "~/hooks/biz/useSubscriptionActions"
 import { useI18n } from "~/hooks/common"
 import { COMMAND_ID } from "~/modules/command/commands/id"
 import { useCommandBinding } from "~/modules/command/hooks/use-command-binding"
+import { HotwordPanel } from "~/modules/hotword/HotwordPanel"
 import { CornerPlayer } from "~/modules/player/corner-player"
 import { SubscriptionColumn } from "~/modules/subscription-column"
 import { removeEmptyFeedCategory, resetSelectedFeedIds } from "~/modules/subscription-column/atom"
@@ -91,6 +92,8 @@ export const SubscriptionColumnContainer = () => {
             <CornerPlayer />
 
             <UpdateNotice />
+
+            <HotwordPanel />
           </SubscriptionColumn>
         </DndContext>
       </FeedResponsiveResizerContainer>
