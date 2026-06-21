@@ -1,6 +1,10 @@
 /**
  * Vite plugin that provides a `/api/rss/preview` endpoint for web-only mode.
  * Fetches and parses RSS/Atom feeds server-side to bypass CORS restrictions.
+ *
+ * Also provides:
+ * - `/api/jina/read` — Jina Reader fallback for content extraction
+ * - `/api/defuddle/read` — Defuddle content extraction (markdown)
  */
 import crypto from "node:crypto"
 
@@ -8,21 +12,84 @@ import type { PluginOption } from "vite"
 
 const RSS_FETCH_TIMEOUT_MS = 30_000
 const RSS_ENTRY_LIMIT = 30
+const JINA_READER_BASE = "https://r.jina.ai/"
+const DEFUDDLE_BASE = "https://defuddle.md/"
+
+/**
+ * Fetch content via Jina Reader (r.jina.ai).
+ * Returns markdown text of the page.
+ */
+async function fetchViaJina(url: string): Promise<string> {
+  const jinaUrl = `${JINA_READER_BASE}${url}`
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), RSS_FETCH_TIMEOUT_MS)
+
+  const response = await fetch(jinaUrl, {
+    signal: controller.signal,
+    headers: {
+      Accept: "text/plain",
+      "X-Respond-With": "markdown",
+    },
+  })
+  clearTimeout(timeout)
+
+  if (!response.ok) {
+    throw new Error(`Jina Reader HTTP ${response.status}: ${response.statusText}`)
+  }
+  return response.text()
+}
+
+/**
+ * Fetch content via Defuddle (md.defuddle.com).
+ * Returns markdown with YAML frontmatter.
+ */
+async function fetchViaDefuddle(url: string): Promise<string> {
+  const defuddleUrl = `${DEFUDDLE_BASE}${url}`
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), RSS_FETCH_TIMEOUT_MS)
+
+  const response = await fetch(defuddleUrl, {
+    signal: controller.signal,
+    headers: { Accept: "text/plain" },
+  })
+  clearTimeout(timeout)
+
+  if (!response.ok) {
+    throw new Error(`Defuddle HTTP ${response.status}: ${response.statusText}`)
+  }
+  return response.text()
+}
+
+/** Helper to read POST body as JSON */
+async function readJsonBody(req: any): Promise<any> {
+  const chunks: Buffer[] = []
+  for await (const chunk of req) {
+    chunks.push(Buffer.from(chunk))
+  }
+  return JSON.parse(Buffer.concat(chunks).toString("utf-8"))
+}
+
+/** CORS preflight helper */
+function handleCors(req: any, res: any): boolean {
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+    })
+    res.end()
+    return true
+  }
+  return false
+}
 
 export function rssProxyPlugin(): PluginOption {
   return {
     name: "rss-proxy",
     configureServer(server) {
+      // ─── /api/rss/preview — RSS fetch with Jina fallback ───
       server.middlewares.use("/api/rss/preview", async (req, res) => {
-        if (req.method === "OPTIONS") {
-          res.writeHead(204, {
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "POST, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type",
-          })
-          res.end()
-          return
-        }
+        if (handleCors(req, res)) return
 
         if (req.method !== "POST") {
           res.writeHead(405, { "Content-Type": "application/json" })
@@ -30,11 +97,7 @@ export function rssProxyPlugin(): PluginOption {
           return
         }
 
-        const chunks: Buffer[] = []
-        for await (const chunk of req) {
-          chunks.push(Buffer.from(chunk))
-        }
-        const body = JSON.parse(Buffer.concat(chunks).toString("utf-8"))
+        const body = await readJsonBody(req)
         const { url, lite, limit } = body as { url: string; lite?: boolean; limit?: number }
 
         if (!url) {
@@ -57,6 +120,17 @@ export function rssProxyPlugin(): PluginOption {
           clearTimeout(timeout)
 
           if (!response.ok) {
+            // Fallback to Jina Reader on 5xx errors
+            if (response.status >= 500) {
+              const jinaContent = await fetchViaJina(url)
+              const fallbackResult = buildFallbackResult(url, jinaContent)
+              res.writeHead(200, {
+                "Content-Type": "application/json",
+                "Access-Control-Allow-Origin": "*",
+              })
+              res.end(JSON.stringify(fallbackResult))
+              return
+            }
             throw new Error(`HTTP ${response.status}: ${response.statusText}`)
           }
 
@@ -69,6 +143,84 @@ export function rssProxyPlugin(): PluginOption {
           })
           res.end(JSON.stringify(result))
         } catch (error: unknown) {
+          // On any fetch error, attempt Jina fallback
+          try {
+            const jinaContent = await fetchViaJina(url)
+            const fallbackResult = buildFallbackResult(url, jinaContent)
+            res.writeHead(200, {
+              "Content-Type": "application/json",
+              "Access-Control-Allow-Origin": "*",
+            })
+            res.end(JSON.stringify(fallbackResult))
+          } catch (jinaError: unknown) {
+            const message = error instanceof Error ? error.message : "Unknown error"
+            const jinaMsg = jinaError instanceof Error ? jinaError.message : ""
+            res.writeHead(502, { "Content-Type": "application/json" })
+            res.end(JSON.stringify({ error: `${message} (Jina fallback also failed: ${jinaMsg})` }))
+          }
+        }
+      })
+
+      // ─── /api/jina/read — Direct Jina Reader endpoint ───
+      server.middlewares.use("/api/jina/read", async (req, res) => {
+        if (handleCors(req, res)) return
+
+        if (req.method !== "POST") {
+          res.writeHead(405, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: "Method not allowed" }))
+          return
+        }
+
+        const body = await readJsonBody(req)
+        const { url } = body as { url: string }
+
+        if (!url) {
+          res.writeHead(400, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: "url is required" }))
+          return
+        }
+
+        try {
+          const content = await fetchViaJina(url)
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+          })
+          res.end(JSON.stringify({ url, content, source: "jina" }))
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "Unknown error"
+          res.writeHead(502, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: message }))
+        }
+      })
+
+      // ─── /api/defuddle/read — Defuddle content extraction ───
+      server.middlewares.use("/api/defuddle/read", async (req, res) => {
+        if (handleCors(req, res)) return
+
+        if (req.method !== "POST") {
+          res.writeHead(405, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: "Method not allowed" }))
+          return
+        }
+
+        const body = await readJsonBody(req)
+        const { url } = body as { url: string }
+
+        if (!url) {
+          res.writeHead(400, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: "url is required" }))
+          return
+        }
+
+        try {
+          const content = await fetchViaDefuddle(url)
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+          })
+          res.end(JSON.stringify({ url, content, source: "defuddle" }))
+        } catch (error: unknown) {
           const message = error instanceof Error ? error.message : "Unknown error"
           res.writeHead(502, { "Content-Type": "application/json" })
           res.end(JSON.stringify({ error: message }))
@@ -76,6 +228,65 @@ export function rssProxyPlugin(): PluginOption {
       })
     },
   }
+}
+
+/**
+ * Build a minimal RSS preview result from raw text content (Jina/Defuddle fallback).
+ * Creates a single-entry feed so the subscription system can still process it.
+ */
+function buildFallbackResult(url: string, content: string) {
+  const feedId = generateId(url)
+  // Try to extract title from first line of markdown
+  const firstLine = content.split("\n").find((l) => l.trim().length > 0) ?? url
+  const title = firstLine.replace(/^#+\s*/, "").slice(0, 100)
+
+  const feed = {
+    id: feedId,
+    title: title || url,
+    url,
+    description: `Content fetched via Jina Reader fallback`,
+    image: null,
+    errorAt: null,
+    siteUrl: url,
+    ownerUserId: null,
+    errorMessage: null,
+    subscriptionCount: null,
+    updatesPerWeek: null,
+    latestEntryPublishedAt: null,
+    tipUserIds: null as string[] | null,
+    updatedAt: new Date().toISOString(),
+  }
+
+  const entryId = generateId(`${url}::fallback::${Date.now()}`)
+  const entries = [
+    {
+      id: entryId,
+      title: title || null,
+      url,
+      content: content.slice(0, 5000),
+      readabilityContent: null,
+      readabilityUpdatedAt: null,
+      description: content.slice(0, 300),
+      guid: entryId,
+      author: null,
+      authorUrl: null,
+      authorAvatar: null,
+      insertedAt: new Date().toISOString(),
+      publishedAt: new Date().toISOString(),
+      media: null,
+      categories: null,
+      attachments: null,
+      extra: null,
+      language: null,
+      feedId,
+      inboxHandle: null,
+      read: false,
+      sources: null,
+      settings: null,
+    },
+  ]
+
+  return { feed, entries }
 }
 
 function generateId(input: string): string {

@@ -49,8 +49,8 @@ const DEFAULT_CONFIG: HotwordEngineConfig = {
   windowMinutes: 60,
   baselineWindows: 24,
   burstThreshold: 3,
-  minCount: 2,
-  maxTerms: 50,
+  minCount: 3,
+  maxTerms: 30,
 }
 
 /** Internal time-window counter */
