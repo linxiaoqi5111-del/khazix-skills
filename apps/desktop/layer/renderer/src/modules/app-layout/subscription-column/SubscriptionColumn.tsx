@@ -25,6 +25,7 @@ import { FloatingLayerScope } from "~/constants"
 import { SIDEBAR_CARD_INSET } from "~/constants/layout"
 import { useBatchUpdateSubscription } from "~/hooks/biz/useSubscriptionActions"
 import { useI18n } from "~/hooks/common"
+import { AddBloggerButton } from "~/modules/add-blogger/AddBloggerButton"
 import { COMMAND_ID } from "~/modules/command/commands/id"
 import { useCommandBinding } from "~/modules/command/hooks/use-command-binding"
 import { HotwordPanel } from "~/modules/hotword/HotwordPanel"
@@ -92,6 +93,8 @@ export const SubscriptionColumnContainer = () => {
             <CornerPlayer />
 
             <UpdateNotice />
+
+            <AddBloggerButton />
 
             <HotwordPanel />
           </SubscriptionColumn>
