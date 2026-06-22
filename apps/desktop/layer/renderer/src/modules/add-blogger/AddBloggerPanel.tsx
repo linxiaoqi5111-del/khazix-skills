@@ -57,9 +57,8 @@ const PLATFORMS: Platform[] = [
     label: "X / Twitter",
     icon: "⚫",
     placeholder: "输入用户名（如 elonmusk）",
-    hint: "需要 RSSHub 配置 Twitter Cookie",
-    buildUrl: (handle: string) =>
-      `${LOCAL_RSSHUB_BASE}/twitter/user/${handle.trim().replace(/^@/, "")}`,
+    hint: "通过 RSSXGo 获取推文，无需配置 Cookie",
+    buildUrl: (handle: string) => `https://api.xgo.ing/rss/user/${handle.trim().replace(/^@/, "")}`,
   },
   {
     id: "zhihu",
