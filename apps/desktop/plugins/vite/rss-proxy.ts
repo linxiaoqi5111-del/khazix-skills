@@ -110,9 +110,48 @@ const SOGOU_UA =
  *  2. Fetch article page → extract `var biz = "..."` (base64)
  *  3. Decode base64 → numeric biz ID
  */
-async function resolveWechatBizId(
-  name: string,
-): Promise<{ bizId: string; articleUrl: string } | null> {
+interface ResolvedAccount {
+  bizId: string
+  nickname: string
+  articleUrl: string
+}
+
+/** Extract biz ID and nickname from a WeChat article HTML page. */
+function extractBizFromArticle(html: string): { bizId: string; nickname: string } | null {
+  // Extract biz from `var biz = "MzYyMjU1NzM2OQ=="` pattern
+  let bizId: string | null = null
+
+  const bizMatch = /var\s+biz\s*=\s*["']([A-Za-z0-9=+/]+)["']/.exec(html)
+  if (bizMatch) {
+    const decoded = Buffer.from(bizMatch[1]!, "base64").toString("utf-8")
+    if (/^\d+$/.test(decoded)) bizId = decoded
+  }
+
+  // Fallback: __biz parameter
+  if (!bizId) {
+    const bizParam = /__biz=([A-Za-z0-9=+/]+)/.exec(html)
+    if (bizParam) {
+      const decoded = Buffer.from(bizParam[1]!, "base64").toString("utf-8")
+      if (/^\d+$/.test(decoded)) bizId = decoded
+    }
+  }
+
+  if (!bizId) return null
+
+  // Extract nickname: var nickname = htmlDecode("xxx") or var nickname = "xxx"
+  let nickname = ""
+  const nnMatch = /var\s+nickname\s*=\s*(?:htmlDecode\()?["']([^"']+)["']/.exec(html)
+  if (nnMatch) nickname = nnMatch[1]!
+  // Fallback: js_name element
+  if (!nickname) {
+    const jsName = /id=["']js_name["'][^>]*>\s*([^<\n]+)/.exec(html)
+    if (jsName) nickname = jsName[1]!.trim()
+  }
+
+  return { bizId, nickname }
+}
+
+async function resolveWechatBizId(name: string): Promise<ResolvedAccount | null> {
   const query = encodeURIComponent(`"${name}" site:mp.weixin.qq.com`)
   const searchUrl = `https://www.sogou.com/web?query=${query}`
 
@@ -143,8 +182,11 @@ async function resolveWechatBizId(
 
   if (articleUrls.length === 0) return null
 
-  // Try each article URL until we extract a biz ID
-  for (const articleUrl of articleUrls.slice(0, 3)) {
+  const nameLower = name.toLowerCase()
+  let bestMatch: ResolvedAccount | null = null
+
+  // Try each article URL: prefer the one whose nickname matches the search name
+  for (const articleUrl of articleUrls.slice(0, 5)) {
     try {
       const controller2 = new AbortController()
       const t2 = setTimeout(() => controller2.abort(), 15_000)
@@ -157,33 +199,39 @@ async function resolveWechatBizId(
       clearTimeout(t2)
 
       const articleHtml = await articleRes.text()
+      const extracted = extractBizFromArticle(articleHtml)
+      if (!extracted) continue
 
-      // Extract biz from `var biz = "MzYyMjU1NzM2OQ=="` pattern
-      const bizMatch = /var\s+biz\s*=\s*["']([A-Za-z0-9=+/]+)["']/.exec(articleHtml)
-      if (bizMatch) {
-        const bizB64 = bizMatch[1]!
-        const bizId = Buffer.from(bizB64, "base64").toString("utf-8")
-        if (/^\d+$/.test(bizId)) {
-          return { bizId, articleUrl }
-        }
+      const candidate: ResolvedAccount = {
+        bizId: extracted.bizId,
+        nickname: extracted.nickname,
+        articleUrl,
       }
 
-      // Fallback: look for __biz parameter in URLs on the page
-      const bizParam = /__biz=([A-Za-z0-9=+/]+)/.exec(articleHtml)
-      if (bizParam) {
-        const bizB64 = bizParam[1]!
-        const bizId = Buffer.from(bizB64, "base64").toString("utf-8")
-        if (/^\d+$/.test(bizId)) {
-          return { bizId, articleUrl }
-        }
+      // If nickname matches search name, return immediately
+      if (extracted.nickname.toLowerCase() === nameLower) {
+        return candidate
+      }
+
+      // If nickname contains the search name (or vice versa), keep as best match
+      if (
+        !bestMatch &&
+        (extracted.nickname.toLowerCase().includes(nameLower) ||
+          nameLower.includes(extracted.nickname.toLowerCase()))
+      ) {
+        bestMatch = candidate
+      }
+
+      // Keep first result as fallback
+      if (!bestMatch) {
+        bestMatch = candidate
       }
     } catch {
-      // Try next URL
       continue
     }
   }
 
-  return null
+  return bestMatch
 }
 
 /** CORS preflight helper */
@@ -564,6 +612,7 @@ export function rssProxyPlugin(): PluginOption {
             JSON.stringify({
               found: true,
               bizId: result.bizId,
+              nickname: result.nickname,
               articleUrl: result.articleUrl,
             }),
           )

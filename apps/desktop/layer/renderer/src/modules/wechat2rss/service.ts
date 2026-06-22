@@ -141,6 +141,7 @@ export const searchAccountsByName = async (name: string): Promise<Wechat2rssList
 interface ResolveNameResponse {
   found: boolean
   bizId?: string
+  nickname?: string
   articleUrl?: string
   error?: string
 }
@@ -151,7 +152,7 @@ interface ResolveNameResponse {
  */
 export const resolveAccountByName = async (
   name: string,
-): Promise<{ bizId: string; articleUrl: string } | null> => {
+): Promise<{ bizId: string; nickname: string; articleUrl: string } | null> => {
   const res = await fetch("/api/wechat2rss/resolve-name", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -168,7 +169,7 @@ export const resolveAccountByName = async (
   }
 
   if (!data.found || !data.bizId) return null
-  return { bizId: data.bizId, articleUrl: data.articleUrl ?? "" }
+  return { bizId: data.bizId, nickname: data.nickname ?? name, articleUrl: data.articleUrl ?? "" }
 }
 
 /**

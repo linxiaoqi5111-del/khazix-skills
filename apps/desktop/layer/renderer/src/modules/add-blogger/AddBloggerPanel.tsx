@@ -166,7 +166,7 @@ export function AddBloggerPanel({ onClose }: { onClose?: () => void }) {
             category: "公众号",
             isPrivate: false,
             hideFromTimeline: null,
-            title: feedData.title || `公众号 - ${trimmed}`,
+            title: feedData.title || resolved.nickname || `公众号 - ${trimmed}`,
             feedId: feedData.id,
             listId: undefined,
           },
