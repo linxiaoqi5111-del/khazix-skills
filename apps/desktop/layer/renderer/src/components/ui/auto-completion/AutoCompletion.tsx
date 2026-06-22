@@ -38,7 +38,7 @@ export const Autocomplete = ({
   defaultValue,
   ...inputProps
 }: AutocompleteProps & { ref?: React.Ref<HTMLInputElement | null> }) => {
-  const { t } = useTranslation()
+  const { t } = useTranslation("common")
   const [selectedOptions, setSelectedOptions] = useState<NoInfer<Suggestion> | null>(
     () => suggestions.find((suggestion) => suggestion.value === value) || null,
   )

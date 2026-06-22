@@ -30,7 +30,7 @@ export const FABBase: FC<
     } & HTMLMotionProps<"button">
   >
 > = (props) => {
-  const { t } = useTranslation()
+  const { t } = useTranslation("common")
   const { children, show = true, ref, ...extra } = props
   const { className, ...rest } = extra
 

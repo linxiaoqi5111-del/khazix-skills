@@ -113,8 +113,8 @@ export const SettingAbout = () => {
           )}
           {!LOCAL_RSS_MODE && rateTarget && (
             <AboutActionRow
-              label={t("about.rateFocal")}
-              description={t("about.rateFocalDescription")}
+              label={t("about.rateFinHot")}
+              description={t("about.rateFinHotDescription")}
               onAction={() => {
                 void handleRateFinHot()
               }}

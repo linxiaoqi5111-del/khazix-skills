@@ -68,9 +68,7 @@ async function main() {
 
     const config: AppXManifestConfig = {
       packageName: "FinHot",
-      packageDisplayName: isStaging
-        ? "FinHot Staging - 金融热词雷达"
-        : "FinHot - 金融热词雷达",
+      packageDisplayName: isStaging ? "FinHot Staging - 金融热词雷达" : "FinHot - 金融热词雷达",
       publisherDisplayName: "Natural Selection Labs",
       identityName: "NaturalSelectionLabs.Follow-Yourfavoritesinoneinbo",
       version: appxVersion,

@@ -29,7 +29,12 @@ export function FeedsSelectionList() {
   const setStep = useSetAtom(stepAtom)
 
   const hasFeedsSelection = chatMessages.some((msg) =>
-    msg.parts.some((p) => p.type === "tool-onboardingGetTrendingFeeds" && p.output),
+    msg.parts.some(
+      (p) =>
+        p.type === "tool-onboardingGetTrendingFeeds" &&
+        "output" in p &&
+        (p as Record<string, unknown>).output,
+    ),
   )
 
   useEffect(() => {
@@ -53,9 +58,12 @@ function FeedSelectionOperationScreen() {
 
   const feedsToSelect: FeedToSelect[] = useMemo(() => {
     // find the last message that has the tool
-    const output = chatMessages
+    const toolPart = chatMessages
       .findLast((m) => m.parts?.some((p) => p.type === "tool-onboardingGetTrendingFeeds"))
-      ?.parts?.findLast((p) => p.type === "tool-onboardingGetTrendingFeeds")?.output
+      ?.parts?.findLast((p) => p.type === "tool-onboardingGetTrendingFeeds") as
+      | { output?: unknown }
+      | undefined
+    const output = toolPart?.output
 
     return typeof output === "string" ? (decode(output) as any[]) : (output as any[])
   }, [chatMessages])
