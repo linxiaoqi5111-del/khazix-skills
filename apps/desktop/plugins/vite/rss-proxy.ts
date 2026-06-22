@@ -188,7 +188,7 @@ async function ensureSogouSession(): Promise<string> {
   }
 }
 
-async function sogouFetch(url: string, timeoutMs = 10_000): Promise<string> {
+async function sogouFetch(url: string, timeoutMs = 8_000): Promise<string> {
   const cookies = await ensureSogouSession()
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -226,9 +226,9 @@ async function findMatchingAccount(
 ): Promise<ResolvedAccount | null> {
   let bestMatch: ResolvedAccount | null = null
 
-  for (const articleUrl of articleUrls.slice(0, 5)) {
+  for (const articleUrl of articleUrls.slice(0, 3)) {
     try {
-      const html = await sogouFetch(articleUrl, 10_000)
+      const html = await sogouFetch(articleUrl, 8_000)
       const extracted = extractBizFromArticle(html)
       if (!extracted) continue
 
@@ -259,19 +259,19 @@ async function findMatchingAccount(
 async function resolveWechatBizId(name: string): Promise<ResolvedAccount | null> {
   const nameLower = name.toLowerCase()
 
-  // Try multiple search query strategies; stop as soon as one yields a match
+  // Run multiple search queries in parallel for speed
   const queries = [`"${name}" site:mp.weixin.qq.com`, `${name} 微信公众号 site:mp.weixin.qq.com`]
 
-  for (const query of queries) {
-    try {
+  const results = await Promise.allSettled(
+    queries.map(async (query) => {
       const urls = await sogouSearchArticleUrls(query)
-      if (urls.length === 0) continue
+      if (urls.length === 0) return null
+      return findMatchingAccount(urls, nameLower)
+    }),
+  )
 
-      const match = await findMatchingAccount(urls, nameLower)
-      if (match) return match
-    } catch {
-      continue
-    }
+  for (const r of results) {
+    if (r.status === "fulfilled" && r.value) return r.value
   }
 
   return null
