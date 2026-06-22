@@ -5,6 +5,7 @@
 
 import type { TermFrequency } from "@follow/hotword"
 import { useAtomValue } from "jotai"
+import { useNavigate } from "react-router"
 
 import { burstingTermsAtom, hotwordSnapshotAtom, topTermsAtom } from "./store"
 
@@ -76,17 +77,27 @@ function TermTag({ term }: { term: TermFrequency }) {
 }
 
 export function HotwordPanel() {
+  const navigate = useNavigate()
   const snapshot = useAtomValue(hotwordSnapshotAtom)
   const burstTerms = useAtomValue(burstingTermsAtom)
   const topTerms = useAtomValue(topTermsAtom)
+
+  const openDashboard = () => {
+    navigate("/hotword")
+  }
 
   if (!snapshot || snapshot.terms.length === 0) {
     return (
       <div className="bg-fill-tertiary" style={panelStyles.container}>
         <div style={panelStyles.header}>
-          <span className="text-text" style={panelStyles.title}>
-            热词雷达
-          </span>
+          <button
+            type="button"
+            onClick={openDashboard}
+            className="text-text transition-opacity hover:opacity-70"
+            style={panelStyles.title}
+          >
+            热词雷达 →
+          </button>
         </div>
         <div className="text-text-tertiary" style={panelStyles.empty}>
           正在收集数据，订阅更多信息源以获取热词...
@@ -98,9 +109,14 @@ export function HotwordPanel() {
   return (
     <div className="bg-fill-tertiary" style={panelStyles.container}>
       <div style={panelStyles.header}>
-        <span className="text-text" style={panelStyles.title}>
-          热词雷达
-        </span>
+        <button
+          type="button"
+          onClick={openDashboard}
+          className="text-text transition-opacity hover:opacity-70"
+          style={panelStyles.title}
+        >
+          热词雷达 →
+        </button>
         {burstTerms.length > 0 && (
           <span className="bg-red/15 text-red" style={panelStyles.badge}>
             {burstTerms.length} 突发

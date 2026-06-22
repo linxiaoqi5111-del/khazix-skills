@@ -31,6 +31,21 @@ export interface HotwordSnapshot {
   terms: TermFrequency[]
 }
 
+/** A single data point for time-series visualization */
+export interface TimeSeriesPoint {
+  timestamp: number
+  count: number
+}
+
+/** Time-series data for a single term across windows */
+export interface TermTimeSeries {
+  term: string
+  points: TimeSeriesPoint[]
+  currentCount: number
+  isBurst: boolean
+  burstScore: number
+}
+
 /** Configuration for the hotword engine */
 export interface HotwordEngineConfig {
   /** Current time window size in minutes (default: 60) */
@@ -221,6 +236,78 @@ export class HotwordEngine {
       historicalWindows: this.historicalWindows.length,
       uniqueTerms: this.currentWindow.counts.size,
       processedEntries: this.processedEntryIds.size,
+    }
+  }
+
+  /**
+   * Get time-series data for top terms across all windows.
+   * Returns frequency counts per window for trend visualization.
+   */
+  getTimeSeries(topN = 10): TermTimeSeries[] {
+    const snapshot = this.getSnapshot()
+    const topTerms = [...snapshot.terms].sort((a, b) => b.count - a.count).slice(0, topN)
+
+    return topTerms.map((termFreq) => {
+      const points: TimeSeriesPoint[] = []
+
+      // Historical windows
+      for (const window of this.historicalWindows) {
+        points.push({
+          timestamp: window.startTime,
+          count: window.counts.get(termFreq.term) ?? 0,
+        })
+      }
+
+      // Current window
+      points.push({
+        timestamp: this.currentWindow.startTime,
+        count: this.currentWindow.counts.get(termFreq.term) ?? 0,
+      })
+
+      return {
+        term: termFreq.term,
+        points,
+        currentCount: termFreq.count,
+        isBurst: termFreq.isBurst,
+        burstScore: termFreq.burstScore,
+      }
+    })
+  }
+
+  /** Get all terms with counts above threshold, grouped for dashboard display */
+  getDashboardData(): {
+    bursting: TermFrequency[]
+    trending: TermFrequency[]
+    stable: TermFrequency[]
+    totalArticles: number
+    totalTerms: number
+  } {
+    const snapshot = this.getSnapshot()
+    const bursting: TermFrequency[] = []
+    const trending: TermFrequency[] = []
+    const stable: TermFrequency[] = []
+
+    for (const term of snapshot.terms) {
+      if (term.isBurst) {
+        bursting.push(term)
+      } else if (term.burstScore > 1.5) {
+        trending.push(term)
+      } else {
+        stable.push(term)
+      }
+    }
+
+    let totalArticles = this.currentWindow.totalDocs
+    for (const w of this.historicalWindows) {
+      totalArticles += w.totalDocs
+    }
+
+    return {
+      bursting,
+      trending,
+      stable,
+      totalArticles,
+      totalTerms: this.currentWindow.counts.size,
     }
   }
 }

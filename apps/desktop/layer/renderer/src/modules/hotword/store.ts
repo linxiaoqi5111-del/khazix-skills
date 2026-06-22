@@ -2,7 +2,7 @@
  * Hotword engine singleton + Jotai atoms for reactive UI state.
  */
 
-import type { HotwordSnapshot, TermFrequency } from "@follow/hotword"
+import type { HotwordSnapshot, TermFrequency, TermTimeSeries } from "@follow/hotword"
 import { HotwordEngine } from "@follow/hotword"
 import { atom } from "jotai"
 
@@ -39,4 +39,17 @@ export const topTermsAtom = atom<TermFrequency[]>((get) => {
 /** Engine stats atom */
 export const hotwordStatsAtom = atom(() => {
   return engine.getStats()
+})
+
+/** Time-series data for trend chart (refreshed with snapshot) */
+export const hotwordTimeSeriesAtom = atom<TermTimeSeries[]>((get) => {
+  // Depend on snapshot to auto-refresh
+  get(hotwordSnapshotAtom)
+  return engine.getTimeSeries(8)
+})
+
+/** Dashboard grouped data atom */
+export const hotwordDashboardAtom = atom((get) => {
+  get(hotwordSnapshotAtom)
+  return engine.getDashboardData()
 })
