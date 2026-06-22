@@ -21,6 +21,7 @@ import { FeedTitle } from "~/modules/feed/feed-title"
 import { getPreferredTitle } from "~/store/feed/hooks"
 
 import { EntryAiTagChips } from "../components/EntryAiTagChips"
+import { EntryClusterBadge } from "../components/EntryClusterBadge"
 import { EntryQualityScoreBadge } from "../components/EntryQualityScoreBadge"
 import { useEntrySummaryDescription } from "../hooks/useEntrySummaryDescription"
 import { StarIcon } from "../star-icon"
@@ -198,6 +199,7 @@ export function ListItem({
             {!!isInCollection && <StarIcon className="absolute right-0 top-0" />}
           </div>
           <EntryQualityScoreBadge entryId={entryId} />
+          <EntryClusterBadge entryId={entryId} />
         </div>
         <EntryAiTagChips entryId={entryId} />
         {!simple && (

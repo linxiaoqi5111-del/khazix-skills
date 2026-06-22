@@ -51,6 +51,7 @@ import {
 import { aiTimelineEnabledAtom } from "../atoms/ai-timeline"
 import { recommendedTimelineEnabledAtom } from "../atoms/recommended-timeline"
 import { getVisibleLocalEntryIds } from "./filter-local-entry-ids"
+import { useEntryClusters } from "./use-entry-clusters"
 import { useIsPreviewFeed } from "./useIsPreviewFeed"
 
 const useRemoteEntries = (): UseEntriesReturn => {
@@ -321,20 +322,22 @@ const useLocalEntries = (): UseEntriesReturn => {
     return sortEntryIdsByRecommended(latestEntries)
   }, [allEntries, isVirtualScope, rankingRevision, recommendedTimelineEnabled])
 
+  const { displayIds: clusteredEntries } = useEntryClusters(sortedEntries)
+
   const [page, setPage] = useState(0)
   const pageSize = 30
   const totalPage = useMemo(
-    () => (sortedEntries ? Math.ceil(sortedEntries.length / pageSize) : 0),
-    [sortedEntries],
+    () => (clusteredEntries ? Math.ceil(clusteredEntries.length / pageSize) : 0),
+    [clusteredEntries],
   )
 
   const entries = useMemo(() => {
-    return sortedEntries?.slice(0, (page + 1) * pageSize) || []
-  }, [sortedEntries, page, pageSize])
+    return clusteredEntries?.slice(0, (page + 1) * pageSize) || []
+  }, [clusteredEntries, page, pageSize])
 
   const hasNext = useMemo(() => {
-    return entries.length < (sortedEntries?.length || 0)
-  }, [entries.length, sortedEntries])
+    return entries.length < (clusteredEntries?.length || 0)
+  }, [entries.length, clusteredEntries])
 
   const refetch = useCallback(async () => {
     setPage(0)
