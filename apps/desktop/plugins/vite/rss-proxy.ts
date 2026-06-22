@@ -718,6 +718,59 @@ export function rssProxyPlugin(): PluginOption {
         }
       })
 
+      // ─── /api/embedding/proxy — Server-side proxy for embedding API ───
+      // Bypasses CORS restrictions when calling external embedding providers from web mode.
+      server.middlewares.use("/api/embedding/proxy", async (req, res) => {
+        if (handleCors(req, res)) return
+
+        if (req.method !== "POST") {
+          res.writeHead(405, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: "Method not allowed" }))
+          return
+        }
+
+        const body = await readJsonBody(req)
+        const { baseURL, apiKey, payload } = body as {
+          baseURL: string
+          apiKey: string
+          payload: Record<string, unknown>
+        }
+
+        if (!baseURL || !apiKey || !payload) {
+          res.writeHead(400, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: "baseURL, apiKey, and payload are required" }))
+          return
+        }
+
+        try {
+          const endpoint = `${baseURL.replace(/\/+$/, "")}/embeddings`
+          const controller = new AbortController()
+          const timeout = setTimeout(() => controller.abort(), 30_000)
+
+          const response = await fetch(endpoint, {
+            method: "POST",
+            signal: controller.signal,
+            headers: {
+              Authorization: `Bearer ${apiKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(payload),
+          })
+          clearTimeout(timeout)
+
+          const text = await response.text()
+          res.writeHead(response.status, {
+            "Content-Type": response.headers.get("content-type") ?? "application/json",
+            "Access-Control-Allow-Origin": "*",
+          })
+          res.end(text)
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "Unknown error"
+          res.writeHead(502, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: message }))
+        }
+      })
+
       // ─── /api/wechat2rss/proxy — Server-side proxy for wechat2rss API ───
       // Bypasses CORS restrictions when the browser calls a local wechat2rss instance.
       server.middlewares.use("/api/wechat2rss/proxy", async (req, res) => {

@@ -83,7 +83,7 @@ export const requestOpenAICompatibleChatCompletion = async (
   return fetchOpenAICompatibleChatCompletion(input)
 }
 
-const fetchOpenAICompatibleEmbedding = async ({
+const _fetchOpenAICompatibleEmbedding = async ({
   baseURL,
   apiKey,
   body,
@@ -114,6 +114,25 @@ const fetchOpenAICompatibleEmbedding = async ({
   return response.json() as Promise<OpenAICompatibleEmbeddingResponse>
 }
 
+const fetchOpenAICompatibleEmbeddingViaProxy = async ({
+  baseURL,
+  apiKey,
+  body,
+}: OpenAICompatibleEmbeddingInput): Promise<OpenAICompatibleEmbeddingResponse> => {
+  const response = await fetch("/api/embedding/proxy", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ baseURL: baseURL.replace(/\/+$/, ""), apiKey, payload: body }),
+  })
+
+  if (!response.ok) {
+    const errorText = await response.text().catch(() => "")
+    throw new Error(errorText || `Embedding proxy request failed with HTTP ${response.status}.`)
+  }
+
+  return response.json() as Promise<OpenAICompatibleEmbeddingResponse>
+}
+
 export const requestOpenAICompatibleEmbedding = async (input: OpenAICompatibleEmbeddingInput) => {
   // Always use IPC in Electron to avoid CORS issues in production (webSecurity: true)
   if (ipcServices?.ai?.openAICompatibleEmbedding) {
@@ -122,6 +141,6 @@ export const requestOpenAICompatibleEmbedding = async (input: OpenAICompatibleEm
     ) as Promise<OpenAICompatibleEmbeddingResponse>
   }
 
-  // In non-Electron environments (web), use direct fetch
-  return fetchOpenAICompatibleEmbedding(input)
+  // In non-Electron environments (web), use the Vite proxy to bypass CORS
+  return fetchOpenAICompatibleEmbeddingViaProxy(input)
 }
