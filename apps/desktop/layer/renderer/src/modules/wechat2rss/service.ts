@@ -130,6 +130,15 @@ export const deleteAccount = async (bizId: string): Promise<void> => {
 }
 
 /**
+ * Search for a WeChat public account by name among already-subscribed accounts.
+ * Uses the wechat2rss `/list?name=xxx` filter.
+ */
+export const searchAccountsByName = async (name: string): Promise<Wechat2rssListItem[]> => {
+  const res = await apiFetch<Wechat2rssListResponse>(`/list?name=${encodeURIComponent(name)}`)
+  return res.data || []
+}
+
+/**
  * Build the RSS feed URL for a subscribed account.
  * Feed URLs do not need authentication.
  */
