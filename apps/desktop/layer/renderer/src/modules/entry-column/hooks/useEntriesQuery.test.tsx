@@ -2,11 +2,14 @@ import { FeedViewType } from "@follow/constants"
 import { useEntriesQuery } from "@follow/store/entry/hooks"
 import { entrySyncServices } from "@follow/store/entry/store"
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
+import { Provider } from "jotai"
 import * as React from "react"
 import { act } from "react"
 import type { Root } from "react-dom/client"
 import { createRoot } from "react-dom/client"
 import { afterEach, beforeAll, describe, expect, test, vi } from "vitest"
+
+import { jotaiStore } from "~/lib/jotai"
 
 type EntriesResponse = Awaited<ReturnType<typeof entrySyncServices.fetchEntries>>
 
@@ -101,9 +104,11 @@ describe("useEntriesQuery", () => {
 
     await act(async () => {
       root?.render(
-        <QueryClientProvider client={queryClient!}>
-          <EntriesQueryConsumer />
-        </QueryClientProvider>,
+        <Provider store={jotaiStore}>
+          <QueryClientProvider client={queryClient!}>
+            <EntriesQueryConsumer />
+          </QueryClientProvider>
+        </Provider>,
       )
     })
 
@@ -189,9 +194,11 @@ describe("useEntriesQuery", () => {
 
     await act(async () => {
       root?.render(
-        <QueryClientProvider client={queryClient!}>
-          <EntriesQueryConsumer />
-        </QueryClientProvider>,
+        <Provider store={jotaiStore}>
+          <QueryClientProvider client={queryClient!}>
+            <EntriesQueryConsumer />
+          </QueryClientProvider>
+        </Provider>,
       )
     })
 
