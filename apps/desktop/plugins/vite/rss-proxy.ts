@@ -151,55 +151,47 @@ function extractBizFromArticle(html: string): { bizId: string; nickname: string 
   return { bizId, nickname }
 }
 
-async function resolveWechatBizId(name: string): Promise<ResolvedAccount | null> {
-  const query = encodeURIComponent(`"${name}" site:mp.weixin.qq.com`)
-  const searchUrl = `https://www.sogou.com/web?query=${query}`
-
-  const controller1 = new AbortController()
-  const t1 = setTimeout(() => controller1.abort(), 15_000)
-
-  let searchHtml: string
+/** Fetch a Sogou web search page and extract mp.weixin.qq.com article URLs. */
+async function sogouSearchArticleUrls(query: string): Promise<string[]> {
+  const searchUrl = `https://www.sogou.com/web?query=${encodeURIComponent(query)}`
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 15_000)
   try {
-    const searchRes = await fetch(searchUrl, {
-      signal: controller1.signal,
+    const res = await fetch(searchUrl, {
+      signal: controller.signal,
       headers: { "User-Agent": SOGOU_UA, Accept: "text/html" },
     })
-    searchHtml = await searchRes.text()
+    const html = await res.text()
+    const decoded = html.replaceAll("&amp;", "&").replaceAll("&lt;", "<").replaceAll("&gt;", ">")
+    return Array.from(
+      new Set(
+        [...decoded.matchAll(/https?:\/\/mp\.weixin\.qq\.com\/s\?[^"<>\s]+/g)].map((m) => m[0]),
+      ),
+    )
   } finally {
-    clearTimeout(t1)
+    clearTimeout(timer)
   }
+}
 
-  // Unescape HTML entities and extract mp.weixin.qq.com article URLs
-  const decoded = searchHtml
-    .replaceAll("&amp;", "&")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-  const articleUrls = Array.from(
-    new Set(
-      [...decoded.matchAll(/https?:\/\/mp\.weixin\.qq\.com\/s\?[^"<>\s]+/g)].map((m) => m[0]),
-    ),
-  )
-
-  if (articleUrls.length === 0) return null
-
-  const nameLower = name.toLowerCase()
+/** Check a batch of article URLs for a matching account nickname. */
+async function findMatchingAccount(
+  articleUrls: string[],
+  nameLower: string,
+): Promise<ResolvedAccount | null> {
   let bestMatch: ResolvedAccount | null = null
 
-  // Try each article URL: prefer the one whose nickname matches the search name
   for (const articleUrl of articleUrls.slice(0, 5)) {
     try {
-      const controller2 = new AbortController()
-      const t2 = setTimeout(() => controller2.abort(), 15_000)
-
-      const articleRes = await fetch(articleUrl, {
-        signal: controller2.signal,
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 15_000)
+      const res = await fetch(articleUrl, {
+        signal: controller.signal,
         headers: { "User-Agent": SOGOU_UA, Accept: "text/html" },
         redirect: "follow",
       })
-      clearTimeout(t2)
+      clearTimeout(timer)
 
-      const articleHtml = await articleRes.text()
-      const extracted = extractBizFromArticle(articleHtml)
+      const extracted = extractBizFromArticle(await res.text())
       if (!extracted) continue
 
       const candidate: ResolvedAccount = {
@@ -208,22 +200,14 @@ async function resolveWechatBizId(name: string): Promise<ResolvedAccount | null>
         articleUrl,
       }
 
-      // If nickname matches search name, return immediately
-      if (extracted.nickname.toLowerCase() === nameLower) {
-        return candidate
-      }
+      if (extracted.nickname.toLowerCase() === nameLower) return candidate
 
-      // If nickname contains the search name (or vice versa), keep as best match
       if (
         !bestMatch &&
+        extracted.nickname &&
         (extracted.nickname.toLowerCase().includes(nameLower) ||
           nameLower.includes(extracted.nickname.toLowerCase()))
       ) {
-        bestMatch = candidate
-      }
-
-      // Keep first result as fallback
-      if (!bestMatch) {
         bestMatch = candidate
       }
     } catch {
@@ -232,6 +216,27 @@ async function resolveWechatBizId(name: string): Promise<ResolvedAccount | null>
   }
 
   return bestMatch
+}
+
+async function resolveWechatBizId(name: string): Promise<ResolvedAccount | null> {
+  const nameLower = name.toLowerCase()
+
+  // Try multiple search query strategies; stop as soon as one yields a match
+  const queries = [`"${name}" site:mp.weixin.qq.com`, `${name} 微信公众号 site:mp.weixin.qq.com`]
+
+  for (const query of queries) {
+    try {
+      const urls = await sogouSearchArticleUrls(query)
+      if (urls.length === 0) continue
+
+      const match = await findMatchingAccount(urls, nameLower)
+      if (match) return match
+    } catch {
+      continue
+    }
+  }
+
+  return null
 }
 
 /** CORS preflight helper */

@@ -113,7 +113,7 @@ interface WechatSearchResult {
   link: string
 }
 
-type SubscribeStatus = "idle" | "loading" | "success" | "error" | "discovering"
+type SubscribeStatus = "idle" | "loading" | "resolving" | "success" | "error" | "discovering"
 
 export function AddBloggerPanel({ onClose }: { onClose?: () => void }) {
   const [selectedPlatform, setSelectedPlatform] = useState<Platform>(PLATFORMS[0]!)
@@ -151,6 +151,7 @@ export function AddBloggerPanel({ onClose }: { onClose?: () => void }) {
       }
 
       // No existing match — try resolving name → biz ID via Sogou search
+      setStatus("resolving")
       const resolved = await resolveAccountByName(trimmed)
       if (resolved) {
         // Found the account! Subscribe using the biz ID
@@ -516,22 +517,28 @@ export function AddBloggerPanel({ onClose }: { onClose?: () => void }) {
       <Button
         onClick={handleSubscribe}
         disabled={
-          !input.trim() || status === "loading" || status === "discovering" || isWechatUnconfigured
+          !input.trim() ||
+          status === "loading" ||
+          status === "resolving" ||
+          status === "discovering" ||
+          isWechatUnconfigured
         }
         buttonClassName="w-full bg-red text-white hover:bg-red/90 disabled:opacity-50"
       >
         {status === "loading"
           ? "订阅中..."
-          : status === "discovering"
-            ? "发现中..."
-            : selectedPlatform.useDiscovery
-              ? "发现订阅源"
-              : selectedPlatform.useWechat2rss &&
-                  input.trim() &&
-                  !isWechatUrl(input.trim()) &&
-                  !isWechatBizId(input.trim())
-                ? "搜索"
-                : "订阅"}
+          : status === "resolving"
+            ? "正在搜索公众号..."
+            : status === "discovering"
+              ? "发现中..."
+              : selectedPlatform.useDiscovery
+                ? "发现订阅源"
+                : selectedPlatform.useWechat2rss &&
+                    input.trim() &&
+                    !isWechatUrl(input.trim()) &&
+                    !isWechatBizId(input.trim())
+                  ? "搜索"
+                  : "订阅"}
       </Button>
     </div>
   )
