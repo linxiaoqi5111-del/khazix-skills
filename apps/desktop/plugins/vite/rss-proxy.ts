@@ -9,6 +9,7 @@
 import { execFile } from "node:child_process"
 import crypto from "node:crypto"
 
+import { resolve as resolvePath } from "pathe"
 import type { PluginOption } from "vite"
 
 const RSS_FETCH_TIMEOUT_MS = 30_000
@@ -449,7 +450,7 @@ async function fetchXueqiuTimeline(
   const cached = xueqiuCache.get(userId)
   if (cached && Date.now() < cached.expiry) return cached.data
 
-  const scraperPath = resolve(import.meta.dirname, "xueqiu-scraper.mjs")
+  const scraperPath = resolvePath(import.meta.dirname, "xueqiu-scraper.mjs")
   const result = await new Promise<string>((resolve, reject) => {
     execFile(
       "node",
@@ -457,7 +458,7 @@ async function fetchXueqiuTimeline(
       {
         timeout: 60_000,
         maxBuffer: 5 * 1024 * 1024,
-        env: { ...process.env, NODE_PATH: resolve(import.meta.dirname, "../../node_modules") },
+        env: { ...process.env, NODE_PATH: resolvePath(import.meta.dirname, "../../node_modules") },
       },
       (error, stdout, stderr) => {
         if (error) {
