@@ -56,9 +56,13 @@ const PLATFORMS: Platform[] = [
     id: "twitter",
     label: "X / Twitter",
     icon: "⚫",
-    placeholder: "输入用户名（如 elonmusk）",
-    hint: "通过 RSSXGo 获取推文，无需配置 Cookie",
-    buildUrl: (handle: string) => `https://api.xgo.ing/rss/user/${handle.trim().replace(/^@/, "")}`,
+    placeholder: "粘贴 RSS 链接 或 输入用户名（需 RSSHub 配置 Cookie）",
+    hint: "推荐：在 rssxgo.com 关注用户后粘贴 RSS 链接；或输入用户名走 RSSHub",
+    buildUrl: (input: string) => {
+      const trimmed = input.trim()
+      if (trimmed.startsWith("http")) return trimmed
+      return `${LOCAL_RSSHUB_BASE}/twitter/user/${trimmed.replace(/^@/, "")}`
+    },
   },
   {
     id: "zhihu",
