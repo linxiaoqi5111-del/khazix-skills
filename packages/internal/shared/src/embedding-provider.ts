@@ -13,8 +13,8 @@ export const EMBEDDING_PROVIDER_PRESETS: EmbeddingProviderPresetOption[] = [
   {
     value: "siliconflow",
     label: "SiliconFlow",
-    defaultBaseURL: "https://api.siliconflow.cn/v1",
-    defaultModel: "BAAI/bge-m3",
+    defaultBaseURL: "https://api.siliconflow.com/v1",
+    defaultModel: "Qwen/Qwen3-Embedding-0.6B",
     dimension: 1024,
     iconClassName: "i-focal-ai",
   },
