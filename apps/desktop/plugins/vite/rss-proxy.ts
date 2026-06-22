@@ -151,26 +151,72 @@ function extractBizFromArticle(html: string): { bizId: string; nickname: string 
   return { bizId, nickname }
 }
 
-/** Fetch a Sogou web search page and extract mp.weixin.qq.com article URLs. */
-async function sogouSearchArticleUrls(query: string): Promise<string[]> {
-  const searchUrl = `https://www.sogou.com/web?query=${encodeURIComponent(query)}`
+/**
+ * Cookie-aware HTTP client for Sogou.
+ * Sogou blocks requests without session cookies (anti-spider).
+ * We warm up a session by visiting sogou.com first, then reuse the Set-Cookie
+ * values on subsequent search requests.
+ */
+let sogouCookies: string | null = null
+let sogouCookieExpiry = 0
+
+async function ensureSogouSession(): Promise<string> {
+  const now = Date.now()
+  if (sogouCookies && now < sogouCookieExpiry) return sogouCookies
+
   const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 15_000)
+  const timer = setTimeout(() => controller.abort(), 8_000)
   try {
-    const res = await fetch(searchUrl, {
+    const res = await fetch("https://www.sogou.com/", {
       signal: controller.signal,
       headers: { "User-Agent": SOGOU_UA, Accept: "text/html" },
     })
-    const html = await res.text()
-    const decoded = html.replaceAll("&amp;", "&").replaceAll("&lt;", "<").replaceAll("&gt;", ">")
-    return Array.from(
-      new Set(
-        [...decoded.matchAll(/https?:\/\/mp\.weixin\.qq\.com\/s\?[^"<>\s]+/g)].map((m) => m[0]),
-      ),
-    )
+    await res.text()
+
+    // Collect Set-Cookie headers
+    const cookies: string[] = []
+    const raw = res.headers.getSetCookie?.() ?? []
+    for (const c of raw) {
+      const kv = c.split(";")[0]
+      if (kv) cookies.push(kv)
+    }
+    sogouCookies = cookies.join("; ")
+    sogouCookieExpiry = now + 10 * 60_000 // 10 min
+    return sogouCookies
   } finally {
     clearTimeout(timer)
   }
+}
+
+async function sogouFetch(url: string, timeoutMs = 10_000): Promise<string> {
+  const cookies = await ensureSogouSession()
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const res = await fetch(url, {
+      signal: controller.signal,
+      headers: {
+        "User-Agent": SOGOU_UA,
+        Accept: "text/html",
+        Cookie: cookies,
+        Referer: "https://www.sogou.com/",
+      },
+    })
+    return await res.text()
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/** Fetch a Sogou web search page and extract mp.weixin.qq.com article URLs. */
+async function sogouSearchArticleUrls(query: string): Promise<string[]> {
+  const html = await sogouFetch(`https://www.sogou.com/web?query=${encodeURIComponent(query)}`)
+  const decoded = html.replaceAll("&amp;", "&").replaceAll("&lt;", "<").replaceAll("&gt;", ">")
+  return Array.from(
+    new Set(
+      [...decoded.matchAll(/https?:\/\/mp\.weixin\.qq\.com\/s\?[^"<>\s]+/g)].map((m) => m[0]),
+    ),
+  )
 }
 
 /** Check a batch of article URLs for a matching account nickname. */
@@ -182,16 +228,8 @@ async function findMatchingAccount(
 
   for (const articleUrl of articleUrls.slice(0, 5)) {
     try {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 15_000)
-      const res = await fetch(articleUrl, {
-        signal: controller.signal,
-        headers: { "User-Agent": SOGOU_UA, Accept: "text/html" },
-        redirect: "follow",
-      })
-      clearTimeout(timer)
-
-      const extracted = extractBizFromArticle(await res.text())
+      const html = await sogouFetch(articleUrl, 10_000)
+      const extracted = extractBizFromArticle(html)
       if (!extracted) continue
 
       const candidate: ResolvedAccount = {
