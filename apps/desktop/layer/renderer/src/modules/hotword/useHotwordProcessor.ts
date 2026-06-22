@@ -1,23 +1,20 @@
 /**
- * Hook that processes new entries through the hotword engine
- * and periodically refreshes the snapshot atom.
+ * Hook that processes new entries through the hotword engine.
+ * Refreshes snapshot only when new entries arrive (event-driven, not polling).
  */
 
 import { useSetAtom } from "jotai"
-import { useCallback, useEffect, useRef } from "react"
+import { useCallback, useEffect } from "react"
 
 import { getHotwordEngine, hotwordSnapshotAtom } from "./store"
-
-/** Refresh interval for hotword snapshot (ms) */
-const REFRESH_INTERVAL = 30_000
 
 /**
  * Processes entries through the hotword engine.
  * Call this hook once at the app layout level.
+ * Snapshot updates are event-driven: refresh only when feed data arrives.
  */
 export function useHotwordProcessor() {
   const setSnapshot = useSetAtom(hotwordSnapshotAtom)
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const refreshSnapshot = useCallback(() => {
     const engine = getHotwordEngine()
@@ -25,17 +22,9 @@ export function useHotwordProcessor() {
     setSnapshot(snapshot)
   }, [setSnapshot])
 
-  // Set up periodic refresh
+  // Initial snapshot on mount
   useEffect(() => {
-    // Initial snapshot
     refreshSnapshot()
-
-    intervalRef.current = setInterval(refreshSnapshot, REFRESH_INTERVAL)
-    return () => {
-      if (intervalRef.current) {
-        clearInterval(intervalRef.current)
-      }
-    }
   }, [refreshSnapshot])
 
   /** Process a batch of entries (call after feed refresh) */
@@ -52,7 +41,7 @@ export function useHotwordProcessor() {
       for (const entry of entries) {
         engine.processEntry(entry.id, entry.title, entry.description, entry.content)
       }
-      // Refresh immediately after processing
+      // Refresh immediately after processing new entries
       refreshSnapshot()
     },
     [refreshSnapshot],
