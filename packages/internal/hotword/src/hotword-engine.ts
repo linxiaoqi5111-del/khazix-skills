@@ -8,6 +8,7 @@
  * - Stores hotword snapshots in SQLite for time-series visualization
  */
 
+import { DEFAULT_ADMISSION_THRESHOLD, filterByAdmission } from "./admission"
 import { segmentText } from "./segmenter"
 
 /** A single term frequency record */
@@ -22,6 +23,8 @@ export interface TermFrequency {
   firstSeen: number
   /** Last seen timestamp in current window */
   lastSeen: number
+  /** Admission score from knowledge-base concept matching (higher = more relevant) */
+  admissionScore?: number
 }
 
 /** Hotword snapshot for storage */
@@ -58,6 +61,8 @@ export interface HotwordEngineConfig {
   minCount: number
   /** Maximum terms to return in a snapshot (default: 50) */
   maxTerms: number
+  /** Minimum admission score to include a term (default: 2). Set to 0 to disable. */
+  admissionThreshold: number
 }
 
 const DEFAULT_CONFIG: HotwordEngineConfig = {
@@ -66,6 +71,7 @@ const DEFAULT_CONFIG: HotwordEngineConfig = {
   burstThreshold: 3,
   minCount: 3,
   maxTerms: 30,
+  admissionThreshold: DEFAULT_ADMISSION_THRESHOLD,
 }
 
 /** Internal time-window counter */
@@ -83,6 +89,8 @@ export class HotwordEngine {
   private currentWindow: WindowCounter
   private historicalWindows: WindowCounter[] = []
   private processedEntryIds = new Set<string>()
+  /** Tracks which terms were matched via FINANCE_DICTIONARY during processing */
+  private dictionaryMatchedTerms = new Set<string>()
 
   constructor(config?: Partial<HotwordEngineConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config }
@@ -143,7 +151,11 @@ export class HotwordEngine {
     const text = [title, description, content].filter(Boolean).join(" ")
     if (!text.trim()) return
 
-    const { terms } = segmentText(text)
+    const { terms, dictionaryMatches } = segmentText(text)
+
+    for (const dm of dictionaryMatches) {
+      this.dictionaryMatchedTerms.add(dm)
+    }
 
     this.currentWindow.totalDocs++
     for (const term of terms) {
@@ -192,8 +204,17 @@ export class HotwordEngine {
       })
     }
 
-    // Sort by burst score (descending), then by count
-    terms.sort((a, b) => {
+    // Apply admission scoring: filter through knowledge-base concept matching
+    const admitted =
+      this.config.admissionThreshold > 0
+        ? filterByAdmission(terms, this.dictionaryMatchedTerms, this.config.admissionThreshold)
+        : terms.map((t) => ({ ...t, admissionScore: 0 }))
+
+    // Sort: admission score > burst > count
+    admitted.sort((a, b) => {
+      const aScore = a.admissionScore ?? 0
+      const bScore = b.admissionScore ?? 0
+      if (aScore !== bScore) return bScore - aScore
       if (a.isBurst !== b.isBurst) return a.isBurst ? -1 : 1
       if (a.burstScore !== b.burstScore) return b.burstScore - a.burstScore
       return b.count - a.count
@@ -202,7 +223,7 @@ export class HotwordEngine {
     return {
       timestamp: now,
       windowMinutes: this.config.windowMinutes,
-      terms: terms.slice(0, this.config.maxTerms),
+      terms: admitted.slice(0, this.config.maxTerms),
     }
   }
 
@@ -222,6 +243,7 @@ export class HotwordEngine {
     this.currentWindow = this.createWindow()
     this.historicalWindows = []
     this.processedEntryIds.clear()
+    this.dictionaryMatchedTerms.clear()
   }
 
   /** Get engine stats */

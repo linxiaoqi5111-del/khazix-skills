@@ -1,13 +1,22 @@
 /**
  * Hotword radar panel — shows trending financial terms.
  * Displays as a collapsible sidebar section or standalone panel.
+ * Terms are gated by the admission scoring system; right-click to
+ * blacklist / whitelist individual terms.
  */
 
 import type { TermFrequency } from "@follow/hotword"
-import { useAtomValue } from "jotai"
+import { useAtomValue, useSetAtom } from "jotai"
+import { useCallback, useState } from "react"
 import { useNavigate } from "react-router"
 
-import { burstingTermsAtom, hotwordSnapshotAtom, topTermsAtom } from "./store"
+import {
+  blacklistAtom,
+  burstingTermsAtom,
+  hotwordSnapshotAtom,
+  topTermsAtom,
+  whitelistAtom,
+} from "./store"
 
 const panelStyles: Record<string, React.CSSProperties> = {
   container: {
@@ -44,6 +53,7 @@ const panelStyles: Record<string, React.CSSProperties> = {
     cursor: "pointer",
     transition: "opacity 0.15s",
     lineHeight: 1.4,
+    position: "relative" as const,
   },
   empty: {
     fontSize: 12,
@@ -53,8 +63,24 @@ const panelStyles: Record<string, React.CSSProperties> = {
   },
 }
 
-function TermTag({ term }: { term: TermFrequency }) {
-  const { isBurst } = term
+function TermTag({
+  term,
+  onBlock,
+  onWhitelist,
+}: {
+  term: TermFrequency
+  onBlock: (t: string) => void
+  onWhitelist: (t: string) => void
+}) {
+  const { isBurst, admissionScore } = term
+  const [showMenu, setShowMenu] = useState(false)
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault()
+    setShowMenu((v) => !v)
+  }, [])
+
+  const scoreLabel = admissionScore != null ? ` | 准入分 ${admissionScore.toFixed(0)}` : ""
 
   return (
     <span
@@ -64,12 +90,42 @@ function TermTag({ term }: { term: TermFrequency }) {
           : "border border-transparent bg-fill-secondary text-text-secondary"
       }
       style={panelStyles.termTag}
-      title={`出现 ${term.count} 次 | 突发指数 ${term.burstScore.toFixed(1)}`}
+      title={`出现 ${term.count} 次 | 突发指数 ${term.burstScore.toFixed(1)}${scoreLabel}`}
+      onContextMenu={handleContextMenu}
     >
       {term.term}
       {isBurst && (
         <span className="ml-1 text-red" style={{ fontSize: 10 }}>
           {term.burstScore.toFixed(1)}x
+        </span>
+      )}
+      {showMenu && (
+        <span
+          className="absolute left-0 top-full z-50 mt-1 flex flex-col gap-0.5 rounded-md border border-fill-secondary bg-popover p-1 shadow-lg"
+          style={{ minWidth: 100, fontSize: 11 }}
+        >
+          <button
+            type="button"
+            className="rounded px-2 py-1 text-left text-text-secondary transition-colors hover:bg-fill-secondary"
+            onClick={(e) => {
+              e.stopPropagation()
+              onBlock(term.term)
+              setShowMenu(false)
+            }}
+          >
+            屏蔽此词
+          </button>
+          <button
+            type="button"
+            className="rounded px-2 py-1 text-left text-text-secondary transition-colors hover:bg-fill-secondary"
+            onClick={(e) => {
+              e.stopPropagation()
+              onWhitelist(term.term)
+              setShowMenu(false)
+            }}
+          >
+            加入白名单
+          </button>
         </span>
       )}
     </span>
@@ -81,6 +137,17 @@ export function HotwordPanel() {
   const snapshot = useAtomValue(hotwordSnapshotAtom)
   const burstTerms = useAtomValue(burstingTermsAtom)
   const topTerms = useAtomValue(topTermsAtom)
+  const dispatchBlacklist = useSetAtom(blacklistAtom)
+  const dispatchWhitelist = useSetAtom(whitelistAtom)
+
+  const handleBlock = useCallback(
+    (term: string) => dispatchBlacklist({ type: "add", term }),
+    [dispatchBlacklist],
+  )
+  const handleWhitelist = useCallback(
+    (term: string) => dispatchWhitelist({ type: "add", term }),
+    [dispatchWhitelist],
+  )
 
   const openDashboard = () => {
     navigate("/hotword")
@@ -134,7 +201,7 @@ export function HotwordPanel() {
           </div>
           <div style={panelStyles.termList}>
             {burstTerms.map((t) => (
-              <TermTag key={t.term} term={t} />
+              <TermTag key={t.term} term={t} onBlock={handleBlock} onWhitelist={handleWhitelist} />
             ))}
           </div>
         </div>
@@ -149,7 +216,7 @@ export function HotwordPanel() {
         </div>
         <div style={panelStyles.termList}>
           {topTerms.slice(0, 15).map((t) => (
-            <TermTag key={t.term} term={t} />
+            <TermTag key={t.term} term={t} onBlock={handleBlock} onWhitelist={handleWhitelist} />
           ))}
         </div>
       </div>

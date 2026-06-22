@@ -1,3 +1,18 @@
+export type { AdmissionDetail } from "./admission"
+export {
+  addToBlacklist,
+  addToWhitelist,
+  DEFAULT_ADMISSION_THRESHOLD,
+  filterByAdmission,
+  getBlacklist,
+  getRegistryStats,
+  getWhitelist,
+  removeFromBlacklist,
+  removeFromWhitelist,
+  scoreTerm,
+  setBlacklist,
+  setWhitelist,
+} from "./admission"
 export type {
   HotwordEngineConfig,
   HotwordSnapshot,

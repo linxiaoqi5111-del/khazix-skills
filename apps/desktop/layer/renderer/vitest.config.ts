@@ -12,6 +12,9 @@ const __dirname = fileURLToPath(new URL(".", import.meta.url))
 
 export default defineProject({
   root: "./",
+  resolve: {
+    dedupe: ["react", "react-dom"],
+  },
   test: {
     globals: true,
     setupFiles: [resolve(__dirname, "./setup-file.ts")],

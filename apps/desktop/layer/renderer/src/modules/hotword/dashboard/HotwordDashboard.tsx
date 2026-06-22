@@ -3,12 +3,18 @@
  * burst indicators, word cloud, and stats overview.
  */
 
-import { useAtomValue } from "jotai"
+import { useAtomValue, useSetAtom } from "jotai"
 import { useCallback, useEffect, useRef, useState } from "react"
 
 import { useSubViewTitle } from "~/modules/app-layout/subview/hooks"
 
-import { hotwordDashboardAtom, hotwordTimeSeriesAtom } from "../store"
+import {
+  blacklistAtom,
+  hotwordDashboardAtom,
+  hotwordTimeSeriesAtom,
+  registryStatsAtom,
+  whitelistAtom,
+} from "../store"
 import { BurstCards } from "./BurstCards"
 import { StatsOverview } from "./StatsOverview"
 import { TrendChart } from "./TrendChart"
@@ -87,6 +93,12 @@ export function HotwordDashboard() {
           </section>
         </>
       )}
+
+      {/* Filter Management */}
+      <section>
+        <SectionHeader title="准入过滤" subtitle="管理黑名单 / 白名单，右键热词可快速操作" />
+        <FilterManagement />
+      </section>
     </div>
   )
 }
@@ -96,6 +108,85 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle: string })
     <div className="mb-3">
       <h2 className="text-lg font-semibold text-text">{title}</h2>
       <p className="text-xs text-text-tertiary">{subtitle}</p>
+    </div>
+  )
+}
+
+function FilterManagement() {
+  const blacklist = useAtomValue(blacklistAtom)
+  const whitelist = useAtomValue(whitelistAtom)
+  const stats = useAtomValue(registryStatsAtom)
+  const dispatchBlacklist = useSetAtom(blacklistAtom)
+  const dispatchWhitelist = useSetAtom(whitelistAtom)
+
+  return (
+    <div className="space-y-4 rounded-xl border border-fill-secondary bg-fill-tertiary p-4">
+      {/* Registry stats */}
+      <div className="flex flex-wrap gap-4 text-xs text-text-tertiary">
+        <span>概念库 {stats.concepts}</span>
+        <span>实体库 {stats.entities}</span>
+        <span>板块库 {stats.sectors}</span>
+        <span>黑名单 {stats.blacklist}</span>
+        <span>白名单 {stats.whitelist}</span>
+      </div>
+
+      {/* Blacklist */}
+      <div>
+        <h3 className="mb-2 text-sm font-medium text-text">
+          黑名单
+          <span className="ml-1 text-text-tertiary">({blacklist.length})</span>
+        </h3>
+        {blacklist.length === 0 ? (
+          <p className="text-xs text-text-tertiary">暂无屏蔽词，右键热词标签可添加</p>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {blacklist.map((term) => (
+              <span
+                key={term}
+                className="inline-flex items-center gap-1 rounded border border-fill-secondary bg-fill-quaternary px-2 py-0.5 text-xs text-text-secondary"
+              >
+                {term}
+                <button
+                  type="button"
+                  className="ml-0.5 text-text-tertiary transition-colors hover:text-red"
+                  onClick={() => dispatchBlacklist({ type: "remove", term })}
+                >
+                  x
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* Whitelist */}
+      <div>
+        <h3 className="mb-2 text-sm font-medium text-text">
+          白名单
+          <span className="ml-1 text-text-tertiary">({whitelist.length})</span>
+        </h3>
+        {whitelist.length === 0 ? (
+          <p className="text-xs text-text-tertiary">暂无白名单词，右键热词标签可添加</p>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {whitelist.map((term) => (
+              <span
+                key={term}
+                className="inline-flex items-center gap-1 rounded border border-green/20 bg-green/5 px-2 py-0.5 text-xs text-green"
+              >
+                {term}
+                <button
+                  type="button"
+                  className="ml-0.5 text-green/50 transition-colors hover:text-red"
+                  onClick={() => dispatchWhitelist({ type: "remove", term })}
+                >
+                  x
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   )
 }

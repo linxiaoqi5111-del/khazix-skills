@@ -94,7 +94,7 @@ function FeedEntriesDropdown({
 }
 
 export function EntryHeaderBreadcrumb() {
-  const { t } = useTranslation()
+  const { t } = useTranslation(["app", "common"])
   const meta = useEntryTitleMeta()
 
   const navigate = useNavigateEntry()
@@ -111,7 +111,7 @@ export function EntryHeaderBreadcrumb() {
   return (
     <div className="flex min-w-0 flex-1 overflow-hidden">
       <nav
-        aria-label={t("a11y.breadcrumb")}
+        aria-label={t("common:a11y.breadcrumb") as string}
         className={
           "group/breadcrumb flex min-w-0 items-center gap-1 truncate leading-tight text-text-secondary"
         }
