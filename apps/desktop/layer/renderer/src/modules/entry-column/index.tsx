@@ -29,6 +29,7 @@ import { timelineRefreshingAtom } from "./atoms/timeline-refreshing"
 import { AITimelineLoadingOverlay } from "./components/ai-timeline-loading/AITimelineLoadingOverlay"
 import { EntryColumnWrapper } from "./components/entry-column-wrapper/EntryColumnWrapper"
 import { FooterMarkItem } from "./components/FooterMarkItem"
+import { PlatformFilterTabs } from "./components/PlatformFilterTabs"
 import { useEntriesActions, useEntriesState } from "./context/EntriesContext"
 import { EntryItemSkeleton } from "./EntryItemSkeleton"
 import { EntryColumnGrid } from "./grid"
@@ -295,6 +296,7 @@ function EntryColumnContent() {
         (!feed || feed?.type === "feed") && <AddFeedHelper />}
 
       <EntryListHeader />
+      <PlatformFilterTabs />
 
       <EntryColumnWrapper
         ref={scrollAreaRef}

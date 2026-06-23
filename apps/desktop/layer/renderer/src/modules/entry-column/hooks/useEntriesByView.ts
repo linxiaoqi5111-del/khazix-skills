@@ -51,6 +51,7 @@ import {
 } from "~/modules/starred-groups/store"
 
 import { aiTimelineEnabledAtom } from "../atoms/ai-timeline"
+import { getPlatformFromFeedUrl, usePlatformFilter } from "../atoms/platform-filter"
 import { recommendedTimelineEnabledAtom } from "../atoms/recommended-timeline"
 import { getVisibleLocalEntryIds } from "./filter-local-entry-ids"
 import { filterByAdmissionThreshold } from "./social-platform-admission"
@@ -344,7 +345,21 @@ const useLocalEntries = (): UseEntriesReturn => {
     })
   }, [sortedEntries, qualityScoreThreshold, qualityScores])
 
-  const { displayIds: clusteredEntries } = useEntryClusters(admittedEntries)
+  // Platform filter: filter entries by source platform tab
+  const platformFilter = usePlatformFilter()
+  const platformFilteredEntries = useMemo(() => {
+    if (platformFilter === "all") return admittedEntries
+
+    return admittedEntries.filter((entryId) => {
+      const entries = entryActions.getFlattenMapEntries()
+      const entry = entries[entryId]
+      if (!entry?.feedId) return false
+      const feedUrl = getFeedById(entry.feedId)?.url
+      return getPlatformFromFeedUrl(feedUrl) === platformFilter
+    })
+  }, [admittedEntries, platformFilter])
+
+  const { displayIds: clusteredEntries } = useEntryClusters(platformFilteredEntries)
 
   const [page, setPage] = useState(0)
   const pageSize = 30
