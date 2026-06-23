@@ -247,42 +247,31 @@ const AIEnhancedTimelineLayoutImpl = () => {
             >
               <EntryColumn />
 
-              {showEntryContentOnLeft && (
-                <>
-                  <AnimatePresence>
-                    {realEntryId && (
-                      <m.div
-                        key="entry-header"
-                        className="absolute inset-x-0 top-0 z-10"
-                        initial={{ translateY: "-50px", opacity: 0 }}
-                        animate={{ translateY: 0, opacity: 1 }}
-                        exit={{ translateY: "-50px", opacity: 0 }}
-                        transition={Spring.smooth(0.3)}
-                      >
-                        <AIEntryHeader entryId={realEntryId} />
-                      </m.div>
-                    )}
-                  </AnimatePresence>
-
-                  <AnimatePresence>
-                    {realEntryId && (
-                      <div className="pointer-events-none absolute inset-0 z-[9] flex flex-col overflow-hidden">
-                        <m.div
-                          key="entry-content"
-                          lcpOptimization
-                          initial={{ translateY: "50px", opacity: 0, scale: 0.98 }}
-                          animate={{ translateY: 0, opacity: 1, scale: 1 }}
-                          exit={{ translateY: "50px", opacity: 0, scale: 0.98 }}
-                          transition={Spring.smooth(0.3)}
-                          className="pointer-events-auto relative flex h-0 flex-1 flex-col bg-theme-background"
-                        >
-                          <EntryContent entryId={realEntryId} className="h-full" />
-                        </m.div>
-                      </div>
-                    )}
-                  </AnimatePresence>
-                </>
-              )}
+              {/* Right-side drawer for entry content */}
+              <AnimatePresence>
+                {showEntryContentOnLeft && realEntryId && (
+                  <m.div
+                    key="entry-drawer"
+                    initial={{ translateX: "100%", opacity: 0.8 }}
+                    animate={{ translateX: 0, opacity: 1 }}
+                    exit={{ translateX: "100%", opacity: 0.8 }}
+                    transition={Spring.presets.snappy}
+                    className="absolute inset-y-0 right-0 z-[12] flex w-[55%] min-w-[400px] max-w-[680px] flex-col overflow-hidden border-l shadow-xl backdrop-blur-2xl"
+                    style={{
+                      borderColor: "hsl(var(--fo-a) / 0.15)",
+                      boxShadow:
+                        "-8px 0 32px hsl(var(--fo-a) / 0.06), -4px 0 16px rgba(0,0,0,0.08)",
+                      background:
+                        "linear-gradient(to right, rgba(var(--color-background) / 0.97), rgba(var(--color-background) / 0.99))",
+                    }}
+                  >
+                    <AIEntryHeader entryId={realEntryId} />
+                    <div className="flex h-0 flex-1 flex-col overflow-hidden">
+                      <EntryContent entryId={realEntryId} className="h-full" />
+                    </div>
+                  </m.div>
+                )}
+              </AnimatePresence>
             </div>
 
             {shouldRenderRightColumn && (
