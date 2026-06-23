@@ -1534,6 +1534,112 @@ export function rssProxyPlugin(): PluginOption {
         }
       })
 
+      // ─── /feed.xml — Selected entries RSS (精选, qualityScore ≥ 70) ───
+      server.middlewares.use("/feed.xml", async (_req, res) => {
+        try {
+          const allEntries = loadAllCachedEntries()
+          const enrichments = readEnrichments()
+          const manifest = readManifest()
+          const feedMap = manifest.feeds
+
+          const selected = allEntries.filter((e) => {
+            const en = enrichments[e.id]
+            if (!en) return false
+            const sel = deriveSelected(en)
+            return sel === "selected"
+          })
+
+          const xml = buildRssXml(
+            "FinHot 精选",
+            "AI 精选金融资讯 — 质量分 ≥ 70",
+            "/feed.xml",
+            selected.slice(0, 100),
+            enrichments,
+            feedMap,
+          )
+          res.writeHead(200, {
+            "Content-Type": "application/rss+xml; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=120",
+          })
+          res.end(xml)
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "Unknown error"
+          res.writeHead(500, { "Content-Type": "text/plain" })
+          res.end(message)
+        }
+      })
+
+      // ─── /feed/all.xml — All entries RSS ───
+      server.middlewares.use("/feed/all.xml", async (_req, res) => {
+        try {
+          const allEntries = loadAllCachedEntries()
+          const enrichments = readEnrichments()
+          const manifest = readManifest()
+          const feedMap = manifest.feeds
+
+          const xml = buildRssXml(
+            "FinHot 全部动态",
+            "所有订阅源的最新内容",
+            "/feed/all.xml",
+            allEntries.slice(0, 200),
+            enrichments,
+            feedMap,
+          )
+          res.writeHead(200, {
+            "Content-Type": "application/rss+xml; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=120",
+          })
+          res.end(xml)
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "Unknown error"
+          res.writeHead(500, { "Content-Type": "text/plain" })
+          res.end(message)
+        }
+      })
+
+      // ─── /feed/daily.xml — Daily digest RSS (today's selected entries) ───
+      server.middlewares.use("/feed/daily.xml", async (_req, res) => {
+        try {
+          const allEntries = loadAllCachedEntries()
+          const enrichments = readEnrichments()
+          const manifest = readManifest()
+          const feedMap = manifest.feeds
+
+          const todayStart = new Date()
+          todayStart.setHours(0, 0, 0, 0)
+          const todayMs = todayStart.getTime()
+
+          const todaySelected = allEntries.filter((e) => {
+            if (new Date(e.publishedAt).getTime() < todayMs) return false
+            const en = enrichments[e.id]
+            if (!en) return false
+            const sel = deriveSelected(en)
+            return sel === "selected" || sel === "watch"
+          })
+
+          const xml = buildRssXml(
+            "FinHot 日报",
+            `${todayStart.toISOString().slice(0, 10)} 精选日报`,
+            "/feed/daily.xml",
+            todaySelected.slice(0, 50),
+            enrichments,
+            feedMap,
+          )
+          res.writeHead(200, {
+            "Content-Type": "application/rss+xml; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=300",
+          })
+          res.end(xml)
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "Unknown error"
+          res.writeHead(500, { "Content-Type": "text/plain" })
+          res.end(message)
+        }
+      })
+
       // ─── /api/public/deploy — Build static HTML and deploy to Cloudflare Pages ───
       server.middlewares.use("/api/public/deploy", async (req, res) => {
         if (handleCors(req, res)) return
