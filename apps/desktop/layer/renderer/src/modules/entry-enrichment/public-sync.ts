@@ -4,6 +4,7 @@ import { useEntryEmbeddingStore } from "@follow/store/entry-embedding/store"
 import { useEntryQualityScoreStore } from "@follow/store/entry-quality-score/store"
 import { useEntryAiTagsStore } from "@follow/store/entry-tags/store"
 import { useSummaryStore } from "@follow/store/summary/store"
+import { useTranslationStore } from "@follow/store/translation/store"
 import { useEffect, useRef } from "react"
 
 import { getActionLanguage } from "~/atoms/settings/general"
@@ -15,6 +16,20 @@ type EnrichmentPayload = Record<
     tags?: string[]
     qualityScore?: number | null
     qualityTier?: string | null
+    qualityDetails?: {
+      contentTypes?: Record<string, number>
+      scores?: Record<string, number>
+      positiveReasons?: string[]
+      negativeReasons?: string[]
+      confidence?: number
+      summary?: string
+    }
+    translation?: {
+      title?: string | null
+      description?: string | null
+      content?: string | null
+      readabilityContent?: string | null
+    }
     embedding?: number[]
   }
 >
@@ -24,6 +39,7 @@ function collectEnrichments(): EnrichmentPayload {
   const tagsData = useEntryAiTagsStore.getState().data
   const qualityData = useEntryQualityScoreStore.getState().data
   const embeddingData = useEntryEmbeddingStore.getState().data
+  const translationData = useTranslationStore.getState().data
   const entryData = useEntryStore.getState().data
   const language = getActionLanguage()
 
@@ -52,6 +68,30 @@ function collectEnrichments(): EnrichmentPayload {
       const tier =
         quality.quality_score >= 70 ? "high" : quality.quality_score >= 40 ? "medium" : "low"
       enrichment.qualityTier = tier
+      enrichment.qualityDetails = {
+        contentTypes: quality.content_types,
+        scores: quality.scores,
+        positiveReasons: quality.positive_reasons,
+        negativeReasons: quality.negative_reasons,
+        confidence: quality.confidence,
+        summary: quality.summary,
+      }
+      hasData = true
+    }
+
+    const translation = translationData[entryId]?.[language]
+    if (
+      translation?.title ||
+      translation?.description ||
+      translation?.content ||
+      translation?.readabilityContent
+    ) {
+      enrichment.translation = {
+        title: translation.title,
+        description: translation.description,
+        content: translation.content,
+        readabilityContent: translation.readabilityContent,
+      }
       hasData = true
     }
 

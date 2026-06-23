@@ -49,6 +49,20 @@ interface CachedEnrichment {
   tags?: string[]
   qualityScore?: number | null
   qualityTier?: string | null
+  qualityDetails?: {
+    contentTypes?: Record<string, number>
+    scores?: Record<string, number>
+    positiveReasons?: string[]
+    negativeReasons?: string[]
+    confidence?: number
+    summary?: string
+  }
+  translation?: {
+    title?: string | null
+    description?: string | null
+    content?: string | null
+    readabilityContent?: string | null
+  }
   embedding?: number[]
 }
 
@@ -1380,7 +1394,7 @@ export function rssProxyPlugin(): PluginOption {
         const allEntriesJson = JSON.stringify(allEntries)
         const enrichmentsJson = JSON.stringify(enrichmentsForPage)
 
-        const html = buildPublicPageHtml(
+        const html = buildPublicPageHtmlLocalStyle(
           feedsJson,
           entriesByFeedJson,
           allEntriesJson,
@@ -1479,7 +1493,7 @@ export function rssProxyPlugin(): PluginOption {
             enrichmentsForPage[id] = rest
             if (embedding) enrichmentsForPage[id].embedding = embedding
           }
-          const html = buildPublicPageHtml(
+          const html = buildPublicPageHtmlLocalStyle(
             JSON.stringify(feeds),
             JSON.stringify(entriesByFeed),
             JSON.stringify(allEntries),
@@ -1520,6 +1534,327 @@ export function rssProxyPlugin(): PluginOption {
       })
     },
   }
+}
+
+function buildPublicPageHtmlLocalStyle(
+  feedsJson: string,
+  entriesByFeedJson: string,
+  allEntriesJson: string,
+  enrichmentsJson: string,
+): string {
+  return `<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FinHot</title>
+<meta name="description" content="金融资讯与市场观点聚合">
+<link rel="icon" href="/focal-logo.png" type="image/png">
+<style>
+html,[data-theme="light"]{
+  --color-red:255 69 58;--color-orange:255 149 0;--color-yellow:255 204 0;--color-green:40 205 65;--color-blue:0 122 255;--color-gray:142 142 147;
+  --color-fill:0 0 0 / .1;--color-fillSecondary:0 0 0 / .08;--color-fillTertiary:0 0 0 / .05;--color-fillQuaternary:0 0 0 / .03;
+  --color-text:0 0 0 / .86;--color-textSecondary:0 0 0 / .56;--color-textTertiary:0 0 0 / .34;--fo-a:21.6 100% 50%;
+  --background:0 0% 100%;--border:20 5.9% 90%;--fo-sidebar:240 4.8% 95.9%;color-scheme:light;
+}
+[data-theme="dark"]{
+  --color-red:255 69 58;--color-orange:255 159 10;--color-yellow:255 214 10;--color-green:50 215 75;--color-blue:10 132 255;--color-gray:152 152 157;
+  --color-fill:255 255 255 / .1;--color-fillSecondary:255 255 255 / .08;--color-fillTertiary:255 255 255 / .05;--color-fillQuaternary:255 255 255 / .03;
+  --color-text:255 255 255 / .86;--color-textSecondary:255 255 255 / .56;--color-textTertiary:255 255 255 / .34;--fo-a:21.6 100% 50%;
+  --background:0 0% 7.1%;--border:0 0% 22.1%;--fo-sidebar:220 8.1% 14.5%;color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:hsl(var(--background));color:rgba(var(--color-text));line-height:1.45;-webkit-font-smoothing:antialiased}
+a{color:inherit;text-decoration:none}.app{display:flex;height:100vh;overflow:hidden;background:hsl(var(--background))}
+.sidebar{width:256px;flex:0 0 256px;margin:8px;height:calc(100vh - 16px);border-radius:16px;background:rgb(247,247,247);box-shadow:0 12px 32px -26px rgba(0,0,0,.42);display:flex;flex-direction:column;overflow:hidden}
+[data-theme="dark"] .sidebar{background:hsl(var(--fo-sidebar));box-shadow:0 18px 40px -24px rgba(0,0,0,.85)}
+.brand{height:32px;display:flex;align-items:center;justify-content:space-between;margin:0 12px 0 16px;gap:8px}.brand-main{display:flex;align-items:center;gap:6px;min-width:0}.brand-mark{width:24px;height:24px;border-radius:7px;background:hsl(var(--fo-a));color:white;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800}.brand-title{font-size:18px;font-weight:760;color:hsl(var(--fo-a));letter-spacing:0}.brand-sub{display:none}
+.brand-tools{display:flex;align-items:center;gap:6px;color:rgba(var(--color-textSecondary))}.brand-tool{width:24px;height:24px;border:0;border-radius:7px;background:transparent;color:inherit;display:flex;align-items:center;justify-content:center;cursor:pointer}.brand-tool:hover{background:rgba(var(--color-fillSecondary));color:rgba(var(--color-text))}
+.side-scroll{flex:1;overflow:auto;margin-top:12px;padding:0 4px 10px;scrollbar-width:thin}.nav-section{height:24px;display:flex;align-items:center;border-radius:6px;padding:0 10px;font-size:12px;font-weight:650;color:rgba(var(--color-textSecondary))}
+.nav-item,.group-head{width:100%;height:32px;border:0;background:transparent;border-radius:6px;color:rgba(var(--color-textSecondary));font:inherit;font-size:14px;font-weight:520;line-height:1.75;display:flex;align-items:center;gap:8px;padding:0 10px;cursor:pointer;text-align:left}
+.nav-item:hover,.group-head:hover{background:rgba(var(--color-fillSecondary));color:rgba(var(--color-text))}.nav-item.active{background:hsl(var(--fo-a) / .14);color:hsl(var(--fo-a));font-weight:650}
+.nav-ico{width:16px;height:16px;display:flex;align-items:center;justify-content:center;flex:0 0 16px;opacity:.9}.nav-ico svg{width:16px;height:16px}.feed-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}.count{margin-left:auto;font-size:12px;color:rgba(var(--color-textTertiary));font-variant-numeric:tabular-nums}.active .count{color:hsl(var(--fo-a) / .8)}
+.group{margin-top:1px}.group-head{height:24px;font-size:12px;font-weight:650;color:rgba(var(--color-textSecondary));padding-left:10px}.chev{width:12px;transition:transform .15s;color:rgba(var(--color-textTertiary))}.group.collapsed .chev{transform:rotate(-90deg)}.group.collapsed .group-body{display:none}.feed-dot{width:16px;height:16px;border-radius:5px;background:rgba(var(--color-fillSecondary));display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:rgba(var(--color-textTertiary));flex:0 0 16px}
+.sidebar-footer{padding:8px 12px 8px;color:rgba(var(--color-textTertiary));font-size:12px}.theme-row{display:flex;gap:4px}.theme-btn{width:24px;height:24px;border:0;border-radius:7px;background:transparent;color:rgba(var(--color-textTertiary));cursor:pointer}.theme-btn.active,.theme-btn:hover{color:hsl(var(--fo-a));background:hsl(var(--fo-a) / .08)}
+.main{flex:1;min-width:0;display:flex;flex-direction:column;background:hsl(var(--background))}.topbar{height:52px;display:flex;align-items:center;justify-content:space-between;padding:8px 16px 0 8px;border-bottom:1px solid transparent}
+.title-wrap{min-width:0}.header-title{font-size:15px;font-weight:680;letter-spacing:0}.header-sub{margin-top:1px;font-size:11px;color:rgba(var(--color-textTertiary));white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tools{display:flex;align-items:center;gap:6px}.tool-btn{width:28px;height:28px;border:0;border-radius:7px;background:transparent;color:rgba(var(--color-textTertiary));display:flex;align-items:center;justify-content:center;cursor:pointer}.tool-btn:hover{background:rgba(var(--color-fillSecondary));color:rgba(var(--color-text))}
+.tabs{display:flex;align-items:center;gap:4px;padding:7px 16px;border-bottom:1px solid rgba(var(--color-fillTertiary));overflow:auto;flex:0 0 auto}.tab{height:28px;padding:0 11px;border-radius:8px;border:1px solid transparent;background:transparent;color:rgba(var(--color-textSecondary));font:inherit;font-size:12px;font-weight:520;cursor:pointer;white-space:nowrap}.tab:hover{background:rgba(var(--color-fillSecondary));color:rgba(var(--color-text))}.tab.active{border-color:hsl(var(--fo-a) / .3);background:hsl(var(--fo-a) / .14);color:hsl(var(--fo-a));font-weight:650}
+.entry-list{flex:1;overflow:auto;padding:6px 8px 28px;scrollbar-width:thin}.card{position:relative;margin:6px 0;padding:11px 14px 11px 16px;border:1px solid hsl(var(--border) / .58);border-left:2px solid hsl(var(--fo-a));border-radius:10px;background:rgba(var(--color-fillQuaternary));transition:background .15s,border-color .15s,box-shadow .15s}.card:hover{background:rgba(var(--color-fillTertiary));border-color:hsl(var(--border));box-shadow:0 3px 14px rgba(0,0,0,.035)}
+.card-head{display:flex;align-items:center;gap:7px}.feed-icon{width:18px;height:18px;border-radius:5px;background:rgba(var(--color-fillSecondary));display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:750;color:rgba(var(--color-textTertiary));overflow:hidden}.feed-icon img{width:100%;height:100%;object-fit:cover}.source{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:rgba(var(--color-textSecondary));font-size:11px;font-weight:650}.time{font-size:11px;color:rgba(var(--color-textTertiary));white-space:nowrap}.q{min-width:28px;border-radius:4px;padding:1px 5px;text-align:center;font-size:11px;font-weight:700;font-variant-numeric:tabular-nums}.q-high{background:rgb(var(--color-green) / .18);color:rgb(var(--color-green));border:1px solid rgb(var(--color-green) / .26)}.q-medium{background:rgb(var(--color-yellow) / .15);color:rgb(var(--color-yellow));border:1px solid rgb(var(--color-yellow) / .22)}.q-low{background:rgb(var(--color-gray) / .14);color:rgba(var(--color-textSecondary));border:1px solid rgb(var(--color-gray) / .14)}.q-wrap{position:relative;display:inline-flex;flex:0 0 auto}.q-wrap:focus{outline:none}.q-wrap:hover .q-detail,.q-wrap:focus-within .q-detail{display:block}.q-detail{display:none;position:absolute;right:0;top:calc(100% + 8px);z-index:30;width:320px;max-width:min(320px,calc(100vw - 24px));padding:10px;border:1px solid hsl(var(--border));border-radius:12px;background:hsl(var(--background));box-shadow:0 10px 28px rgba(0,0,0,.12);color:rgba(var(--color-text));font-size:11px;font-weight:400;line-height:1.45}.q-detail-title{font-size:12px;font-weight:720;margin-bottom:4px}.q-detail-muted{color:rgba(var(--color-textTertiary))}.q-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 10px;margin-top:6px}.q-types{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}.q-reasons{margin-top:6px;padding-left:14px}
+.card.open{border-color:hsl(var(--fo-a) / .36);background:hsl(var(--fo-a) / .035)}.card-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:6px;font-size:14px;font-weight:680;line-height:1.36;color:rgba(var(--color-text));word-break:break-word}.card-title:hover{color:hsl(var(--fo-a))}button.card-title{width:100%;border:0;background:transparent;text-align:left;font:inherit;cursor:pointer}.desc{margin-top:4px;font-size:12px;line-height:1.58;color:rgba(var(--color-textSecondary));display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}.card-foot{display:flex;align-items:center;gap:6px;margin-top:7px}.tags{display:flex;flex-wrap:wrap;gap:4px;min-width:0;flex:1}.tag{border-radius:4px;background:rgba(var(--color-fillSecondary));color:rgba(var(--color-textSecondary));font-size:10px;padding:2px 6px}.cluster{border:0;border-radius:4px;background:rgb(var(--color-blue) / .1);color:rgb(var(--color-blue));font:inherit;font-size:11px;padding:2px 6px;cursor:pointer}.cluster.on{background:hsl(var(--fo-a) / .15);color:hsl(var(--fo-a))}.member{margin-left:24px;opacity:.9}.ai-panel{margin-top:10px;border-radius:12px;border:1px solid hsl(var(--fo-a) / .18);background:linear-gradient(135deg,hsl(var(--fo-a) / .07),transparent 52%),rgba(var(--color-fillQuaternary));box-shadow:0 8px 24px rgba(0,0,0,.045);overflow:hidden}.ai-card{padding:12px}.ai-head{display:flex;align-items:center;justify-content:space-between;gap:8px;color:hsl(var(--fo-a));font-size:12px;font-weight:720}.ai-title{display:flex;align-items:center;gap:6px}.ai-dot{width:8px;height:8px;border-radius:999px;background:hsl(var(--fo-a));box-shadow:0 0 0 4px hsl(var(--fo-a) / .12)}.ai-body{margin-top:9px;color:rgba(var(--color-text));font-size:13px;line-height:1.62;white-space:pre-wrap;word-break:break-word}.ai-section{border-top:1px solid hsl(var(--border) / .62);padding:12px}.ai-section-title{font-size:12px;font-weight:720;color:rgba(var(--color-textSecondary));margin-bottom:7px}.ai-link{display:inline-flex;align-items:center;gap:5px;margin-top:10px;color:hsl(var(--fo-a));font-size:12px;font-weight:650}.translation-title{font-size:13px;font-weight:680;color:rgba(var(--color-text));margin-bottom:6px}
+.radar-wrap{display:flex;flex-direction:column;gap:8px;padding:4px 4px 26px}.radar-card{overflow:hidden;border:1px solid hsl(var(--fo-a) / .16);border-radius:12px;background:linear-gradient(135deg,hsl(var(--fo-a) / .035),transparent 46%),rgba(var(--color-fillQuaternary));box-shadow:0 4px 16px hsl(var(--fo-a) / .04),0 2px 8px rgba(0,0,0,.045)}.radar-main{width:100%;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer;display:flex;align-items:flex-start;gap:10px;padding:12px}.radar-main:hover{background:rgba(var(--color-fillQuaternary))}.radar-title-row{display:flex;align-items:flex-start;gap:8px}.radar-title{flex:1;min-width:0;font-size:14px;font-weight:680;line-height:1.35}.heat{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:hsl(var(--fo-a));white-space:nowrap}.heat-dot{width:7px;height:7px;border-radius:999px;background:hsl(var(--fo-a));box-shadow:0 0 0 3px hsl(var(--fo-a) / .12)}.chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:7px}.chip{border-radius:6px;background:rgba(var(--color-fillTertiary));color:rgba(var(--color-textSecondary));font-size:11px;padding:2px 6px}.meta{display:flex;gap:12px;margin-top:7px;color:rgba(var(--color-textTertiary));font-size:11px}.radar-chevron{width:16px;color:rgba(var(--color-textTertiary));transition:transform .15s}.radar-card.open .radar-chevron{transform:rotate(180deg)}.radar-entries{display:none;border-top:1px solid hsl(var(--fo-a) / .13);padding:7px 10px 10px}.radar-card.open .radar-entries{display:block}.radar-entry{display:flex;align-items:center;gap:8px;border-radius:8px;padding:6px 6px;color:rgba(var(--color-textSecondary));font-size:12px}.radar-entry:hover{background:rgba(var(--color-fillQuaternary));color:rgba(var(--color-text))}.radar-entry-title{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.empty{height:300px;display:flex;flex-direction:column;gap:8px;align-items:center;justify-content:center;color:rgba(var(--color-textTertiary));font-size:13px}.empty svg{width:38px;height:38px;opacity:.38}
+.mobile-toggle{display:none;position:fixed;left:12px;top:10px;z-index:60;width:34px;height:34px;border:0;border-radius:8px;background:hsl(var(--background));color:rgba(var(--color-text));box-shadow:0 1px 7px rgba(0,0,0,.12)}
+.overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.32);z-index:40}
+@media(max-width:520px){.sidebar{position:fixed;inset:0 auto 0 0;z-index:50;height:100vh;margin:0;border-radius:0;transform:translateX(-100%);transition:transform .22s}.sidebar.open{transform:translateX(0)}.overlay.open{display:block}.mobile-toggle{display:flex;align-items:center;justify-content:center}.topbar{padding-left:56px}.tabs{padding-left:12px}.entry-list{padding:5px 4px 24px}.card{border-radius:9px;padding:10px 12px}.member{margin-left:12px}}
+</style>
+</head>
+<body>
+<div class="app">
+<button class="mobile-toggle" id="mobile-toggle" aria-label="菜单"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg></button>
+<aside class="sidebar" id="sidebar">
+  <div class="brand">
+    <div class="brand-main"><div class="brand-mark">F</div><div class="brand-title">FinHot</div><div class="brand-sub">金融动态聚合</div></div>
+    <div class="brand-tools">
+      <button class="brand-tool" title="刷新"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 0 1-15.5 6.2"/><path d="M3 12A9 9 0 0 1 18.5 5.8"/><path d="M18 2v4h4"/><path d="M6 22v-4H2"/></svg></button>
+      <button class="brand-tool" title="添加"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg></button>
+    </div>
+  </div>
+  <div class="side-scroll">
+    <div class="nav-section">智能</div>
+    <div id="smart-nav"></div>
+    <div class="nav-section">信源</div>
+    <div id="source-groups"></div>
+  </div>
+  <div class="sidebar-footer"><span>Public View</span><div class="theme-row"><button class="theme-btn" data-theme="light" title="浅色">L</button><button class="theme-btn" data-theme="system" title="系统">S</button><button class="theme-btn" data-theme="dark" title="深色">D</button></div></div>
+</aside>
+<div class="overlay" id="overlay"></div>
+<main class="main">
+  <div class="topbar">
+    <div class="title-wrap"><div class="header-title" id="header-title">今天</div><div class="header-sub" id="header-sub"></div></div>
+    <div class="tools">
+      <button class="tool-btn" title="最新"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M7 12h10M10 18h4"/></svg></button>
+      <button class="tool-btn" title="视图"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5h16M4 12h16M4 19h16"/></svg></button>
+    </div>
+  </div>
+  <div class="tabs" id="tabs"></div>
+  <div class="entry-list" id="entry-list"></div>
+</main>
+</div>
+<script>
+(function(){
+var feeds=${feedsJson};
+var entriesByFeed=${entriesByFeedJson};
+var allEntries=${allEntriesJson};
+var enrichments=${enrichmentsJson};
+var feedMap={};feeds.forEach(function(f){feedMap[f.id]=f});
+var selectedFeedId=null;
+var activeView="smart-today";
+var activeCat="all";
+var expandedGroups={};
+var expandedClusters={};
+var expandedTopicId=null;
+var activeEntryId=null;
+
+function esc(s){if(s==null)return"";return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;")}
+function strip(s){if(!s)return"";var d=document.createElement("div");d.innerHTML=s;return d.textContent||""}
+function plain(s){return String(s||"").split(String.fromCharCode(96)).join("").replace(/\\*\\*([^*]+)\\*\\*/g,"$1").replace(/\\[([^\\]]+)\\]\\([^)]+\\)/g,"$1").replace(/^\\s{0,3}#{1,6}\\s+/gm,"").replace(/^\\s*[-*+]\\s+/gm,"").replace(/\\s+/g," ").trim()}
+function when(d){var t=new Date(d).getTime();var diff=Date.now()-t;var m=Math.floor(diff/60000);if(!isFinite(t))return"";if(m<1)return"刚刚";if(m<60)return m+"分钟前";var h=Math.floor(m/60);if(h<24)return h+"小时前";var days=Math.floor(h/24);if(days<30)return days+"天前";return new Date(t).toLocaleDateString("zh-CN")}
+function shortTime(t){var d=new Date(t);var hh=String(d.getHours()).padStart(2,"0");var mm=String(d.getMinutes()).padStart(2,"0");var n=new Date();if(d.toDateString()===n.toDateString())return hh+":"+mm;return (d.getMonth()+1)+"/"+d.getDate()+" "+hh+":"+mm}
+function initial(s){s=String(s||"?");var c=s.charAt(0);return /[\\u4e00-\\u9fff]/.test(c)?c:c.toUpperCase()}
+function scoreVal(en){if(!en)return null;var v=en.qualityScore;if(v==null)v=en.quality_score;v=Number(v);return isFinite(v)?Math.round(v):null}
+function scoreTier(v){return v>=70?"high":v>=40?"medium":"low"}
+function qualityDetailHtml(en){
+  var d=en&&(en.qualityDetails||en.quality_details);if(!d)return"";
+  var scores=d.scores||{};
+  var scoreKeys=[["information_gain","信息增量"],["depth","深度"],["evidence","证据"],["actionability","可操作"],["originality","原创"],["signal_density","密度"]];
+  var scoreRows=scoreKeys.map(function(k){var v=scores[k[0]];return v==null?"":'<span>'+esc(k[1])+' '+esc(v)+'/5</span>'}).join("");
+  var types=d.contentTypes||d.content_types||{};
+  var typeRows=Object.keys(types).filter(function(k){return Number(types[k])>0}).sort(function(a,b){return Number(types[b])-Number(types[a])}).slice(0,3).map(function(k){return '<span class="tag">'+esc(k)+' '+Math.round(Number(types[k])*100)+'%</span>'}).join("");
+  var positives=(d.positiveReasons||d.positive_reasons||[]).slice(0,3).map(function(r){return '<li>'+esc(r)+'</li>'}).join("");
+  var negatives=(d.negativeReasons||d.negative_reasons||[]).slice(0,2).map(function(r){return '<li>'+esc(r)+'</li>'}).join("");
+  var confidence=d.confidence==null?null:Math.round(Number(d.confidence)*100);
+  var html='<span class="q-detail" role="tooltip"><div class="q-detail-title">AI 打分明细</div>';
+  if(confidence!=null&&isFinite(confidence))html+='<div class="q-detail-muted">置信度 '+confidence+'%</div>';
+  if(d.summary)html+='<div style="margin-top:6px">'+esc(d.summary)+'</div>';
+  if(typeRows)html+='<div class="q-types">'+typeRows+'</div>';
+  if(scoreRows)html+='<div class="q-grid">'+scoreRows+'</div>';
+  if(positives)html+='<ul class="q-reasons">'+positives+'</ul>';
+  if(negatives)html+='<ul class="q-reasons q-detail-muted">'+negatives+'</ul>';
+  return html+'</span>';
+}
+function textHtml(s){return esc(String(s||"").trim()).replace(/\\n{3,}/g,"\\n\\n")}
+function translationText(en){
+  var tr=en&&(en.translation||en.translated);if(!tr)return"";
+  return tr.readabilityContent||tr.content||tr.description||"";
+}
+function hasTranslation(en){return !!translationText(en)||!!(en&&en.translation&&(en.translation.title||en.translation.description))}
+function renderEntryInsight(e,en,f){
+  var summary=String(en.summary||"").trim();
+  var tr=en.translation||{};
+  var translatedBody=translationText(en);
+  var hasAny=summary||hasTranslation(en);
+  var h='<div class="ai-panel">';
+  h+='<div class="ai-card"><div class="ai-head"><span class="ai-title"><span class="ai-dot"></span>AI 总结</span>';
+  var score=scoreVal(en);if(score!=null)h+='<span class="q q-'+scoreTier(score)+'">'+score+'</span>';
+  h+='</div><div class="ai-body">'+(summary?textHtml(summary):'暂无 AI 总结')+'</div>';
+  if(e.url)h+='<a class="ai-link" href="'+esc(e.url)+'" target="_blank" rel="noopener">打开原文 ↗</a>';
+  h+='</div>';
+  if(hasTranslation(en)){
+    h+='<div class="ai-section"><div class="ai-section-title">翻译</div>';
+    if(tr.title)h+='<div class="translation-title">'+textHtml(tr.title)+'</div>';
+    if(translatedBody)h+='<div class="ai-body">'+textHtml(translatedBody)+'</div>';
+    h+='</div>';
+  }
+  return h+'</div>';
+}
+function platform(feed){var u=(feed&&feed.url||"").toLowerCase();var c=(feed&&feed.category||"").toLowerCase();if(u.indexOf("xueqiu")>=0||u.indexOf("localhost:8090")>=0||c.indexOf("雪球")>=0)return"xueqiu";if(u.indexOf("twitter")>=0||u.indexOf("x.com")>=0||u.indexOf("nitter")>=0||u.indexOf("xcancel")>=0||c.indexOf("推特")>=0)return"twitter";if(u.indexOf("weibo")>=0||c.indexOf("微博")>=0)return"weibo";if(u.indexOf("wechat")>=0||u.indexOf("mp.weixin")>=0||c.indexOf("公众号")>=0)return"wechat";return"other"}
+function platformLabel(p){return p==="xueqiu"?"雪球":p==="twitter"?"推特":p==="weibo"?"微博":p==="wechat"?"公众号":"RSS"}
+function visibleByCat(e){if(activeCat==="all")return true;return platform(feedMap[e.feedId])===activeCat}
+function isToday(e){var d=new Date(e.publishedAt);var n=new Date();return d.toDateString()===n.toDateString()}
+function countForFeed(id){return (entriesByFeed[id]||[]).length}
+function icon(name){var icons={today:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 2v4M16 2v4M3 10h18"/><rect x="3" y="4" width="18" height="18" rx="2"/></svg>',unread:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h6"/></svg>',star:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8-6.2-3.3L5.8 21 7 14.2 2 9.3l6.9-1z"/></svg>',radar:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20a8 8 0 1 0-8-8"/><path d="M12 16a4 4 0 1 0-4-4"/><path d="M12 12 4 20"/></svg>'};return icons[name]||""}
+
+var radarTopics=buildRadarTopics();
+if(!allEntries.some(isToday))activeView="smart-unread";
+
+function renderSmartNav(){
+  var todayCount=allEntries.filter(isToday).length;
+  var items=[
+    {id:"smart-today",label:"今天",count:todayCount,ico:"today"},
+    {id:"smart-unread",label:"全部未读",count:allEntries.length,ico:"unread"},
+    {id:"smart-favorites",label:"收藏",count:0,ico:"star"},
+    {id:"smart-radar",label:"热点雷达",count:radarTopics.length,ico:"radar"}
+  ];
+  document.getElementById("smart-nav").innerHTML=items.map(function(it){
+    return '<button class="nav-item '+(activeView===it.id?"active":"")+'" data-view="'+it.id+'"><span class="nav-ico">'+icon(it.ico)+'</span><span class="feed-name">'+it.label+'</span><span class="count">'+it.count+'</span></button>';
+  }).join("");
+}
+
+function renderSourceGroups(){
+  var groups={};
+  feeds.forEach(function(f){var label=f.category||platformLabel(platform(f));if(!groups[label])groups[label]=[];groups[label].push(f)});
+  var html="";
+  Object.keys(groups).sort(function(a,b){return groups[b].length-groups[a].length}).forEach(function(label){
+    if(expandedGroups[label]==null)expandedGroups[label]=true;
+    var collapsed=!expandedGroups[label];
+    var total=groups[label].reduce(function(n,f){return n+countForFeed(f.id)},0);
+    html+='<div class="group '+(collapsed?"collapsed":"")+'" data-group="'+esc(label)+'">';
+    html+='<button class="group-head" data-group-toggle="'+esc(label)+'"><span class="chev">⌄</span><span class="feed-name">'+esc(label)+'</span><span class="count">'+total+'</span></button><div class="group-body">';
+    groups[label].sort(function(a,b){return countForFeed(b.id)-countForFeed(a.id)}).forEach(function(f){
+      html+='<button class="nav-item '+(selectedFeedId===f.id?"active":"")+'" data-feed="'+esc(f.id)+'"><span class="feed-dot">'+esc(initial(f.title||f.url))+'</span><span class="feed-name">'+esc(f.title||f.url)+'</span><span class="count">'+countForFeed(f.id)+'</span></button>';
+    });
+    html+='</div></div>';
+  });
+  document.getElementById("source-groups").innerHTML=html;
+}
+
+function renderTabs(){
+  var tabs=[["all","全部"],["xueqiu","雪球"],["weibo","微博"],["twitter","推特"],["wechat","公众号"],["other","RSS"]];
+  document.getElementById("tabs").innerHTML=tabs.map(function(t){return '<button class="tab '+(activeCat===t[0]?"active":"")+'" data-cat="'+t[0]+'">'+t[1]+'</button>'}).join("");
+}
+
+function selectedEntries(){
+  var list=[];
+  if(selectedFeedId)list=(entriesByFeed[selectedFeedId]||[]).slice();
+  else if(activeView==="smart-today")list=allEntries.filter(isToday);
+  else if(activeView==="smart-favorites")list=[];
+  else list=allEntries.slice();
+  return list.filter(visibleByCat).sort(function(a,b){return new Date(b.publishedAt).getTime()-new Date(a.publishedAt).getTime()});
+}
+
+function render(){
+  renderSmartNav();renderSourceGroups();renderTabs();
+  if(activeView==="smart-radar"&&!selectedFeedId){renderRadar();return}
+  renderTimeline();
+}
+
+function header(title,sub){document.getElementById("header-title").textContent=title;document.getElementById("header-sub").textContent=sub||""}
+function empty(msg,sub){document.getElementById("entry-list").innerHTML='<div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M9 12h6"/></svg><div>'+esc(msg)+'</div>'+(sub?'<div>'+esc(sub)+'</div>':"")+'</div>'}
+
+function renderTimeline(){
+  var entries=selectedEntries();
+  var title=selectedFeedId?(feedMap[selectedFeedId]&&feedMap[selectedFeedId].title||"动态"):(activeView==="smart-today"?"今天":activeView==="smart-favorites"?"收藏":"全部未读");
+  header(title,entries.length+" 未读"+(selectedFeedId?"":" · "+feeds.length+" 个信源"));
+  if(!entries.length){empty("暂无内容",activeView==="smart-today"?"今天当前筛选下没有内容":"");return}
+  var cl=buildClusters(entries);
+  var html="";
+  entries.slice(0,500).forEach(function(e){
+    var parent=cl.memberOf[e.id];if(parent&&!expandedClusters[parent])return;
+    html+=(parent?'<div class="member">':"")+renderCard(e,cl)+(parent?"</div>":"");
+  });
+  var list=document.getElementById("entry-list");list.innerHTML=html;list.scrollTop=0;
+}
+
+function renderCard(e,cl){
+  var en=enrichments[e.id]||{};var f=feedMap[e.feedId]||{};var score=scoreVal(en);
+  var isOpen=activeEntryId===e.id;
+  var desc=plain(en.summary)||strip(e.description||e.content||"").replace(/\\s+/g," ").trim().slice(0,280);
+  var tags=Array.isArray(en.tags)?en.tags.slice(0,4):[];
+  var h='<article class="card '+(isOpen?"open":"")+'" data-entry-card="'+esc(e.id)+'"><div class="card-head"><span class="feed-icon">'+(f.image?'<img src="'+esc(f.image)+'" alt="">':esc(initial(f.title||f.url)))+'</span><span class="source">'+esc(f.title||f.url||"")+'</span>';
+  if(score!=null)h+='<span class="q-wrap" tabindex="0"><span class="q q-'+scoreTier(score)+'">'+score+'</span>'+qualityDetailHtml(en)+'</span>';
+  h+='<span class="time">'+when(e.publishedAt)+'</span></div>';
+  h+='<button class="card-title" data-open-entry="'+esc(e.id)+'">'+esc(e.title||"(无标题)")+'</button>';
+  if(desc)h+='<div class="desc">'+esc(desc)+'</div>';
+  var foot="";
+  if(tags.length)foot+='<div class="tags">'+tags.map(function(t){return '<span class="tag">'+esc(typeof t==="object"?(t.label||t.name||""):t)+'</span>'}).join("")+'</div>';
+  if(cl.leaders[e.id])foot+='<button class="cluster '+(expandedClusters[e.id]?"on":"")+'" data-cluster="'+esc(e.id)+'">+'+(cl.leaders[e.id].length-1)+' 相关</button>';
+  if(foot)h+='<div class="card-foot">'+foot+'</div>';
+  if(isOpen)h+=renderEntryInsight(e,en,f);
+  return h+'</article>';
+}
+
+function cos(a,b){if(!a||!b||a.length!==b.length)return 0;var dot=0,aa=0,bb=0;for(var i=0;i<a.length;i++){dot+=a[i]*b[i];aa+=a[i]*a[i];bb+=b[i]*b[i]}return aa&&bb?dot/Math.sqrt(aa*bb):0}
+function buildClusters(entries){
+  var leaders={},memberOf={},items=entries.map(function(e){var en=enrichments[e.id]||{};return en.embedding&&en.embedding.length?{id:e.id,vec:en.embedding,time:new Date(e.publishedAt).getTime(),feed:e.feedId}:null}).filter(Boolean);
+  for(var i=0;i<items.length;i++){if(memberOf[items[i].id])continue;var ids=[items[i].id];for(var j=i+1;j<items.length;j++){if(memberOf[items[j].id])continue;if(items[i].feed===items[j].feed)continue;if(Math.abs(items[i].time-items[j].time)>18*3600000)continue;if(cos(items[i].vec,items[j].vec)>=.78){ids.push(items[j].id);memberOf[items[j].id]=items[i].id}}if(ids.length>1)leaders[items[i].id]=ids}
+  return{leaders:leaders,memberOf:memberOf};
+}
+
+function heat(sourceCount,latestAt,size){var age=Date.now()-latestAt;var rec=age>86400000?0.25:age>43200000?0.5:age>3600000?0.75:1;return Math.pow(sourceCount,1.5)*rec*Math.log2(size+1)}
+function buildRadarTopics(){
+  var cutoff=Date.now()-3*86400000;
+  var entries=allEntries.filter(function(e){return new Date(e.publishedAt).getTime()>=cutoff});
+  var clusters=buildClusters(entries).leaders;
+  var topics=Object.keys(clusters).map(function(id){return makeTopic(id,clusters[id])}).filter(Boolean);
+  if(!topics.length){
+    var buckets={};
+    entries.forEach(function(e){var en=enrichments[e.id]||{};var tags=Array.isArray(en.tags)?en.tags:[];var key=tags.length?String(typeof tags[0]==="object"?(tags[0].label||tags[0].name):tags[0]):plain(e.title).slice(0,12);if(!key)return;if(!buckets[key])buckets[key]=[];buckets[key].push(e.id)});
+    topics=Object.keys(buckets).map(function(k){return buckets[k].length>1?makeTopic("tag-"+k,buckets[k]):null}).filter(Boolean);
+  }
+  topics.sort(function(a,b){return b.heat-a.heat});
+  return topics.slice(0,60);
+}
+function makeTopic(id,ids){
+  var entries=ids.map(function(eid){return allEntries.find(function(e){return e.id===eid})}).filter(Boolean);
+  if(entries.length<2)return null;
+  var sourceIds=[];entries.forEach(function(e){if(sourceIds.indexOf(e.feedId)<0)sourceIds.push(e.feedId)});
+  var times=entries.map(function(e){return new Date(e.publishedAt).getTime()}).filter(isFinite);
+  var scores=entries.map(function(e){return scoreVal(enrichments[e.id])}).filter(function(v){return v!=null});
+  var pick=entries.slice().sort(function(a,b){return (scoreVal(enrichments[b.id])||0)-(scoreVal(enrichments[a.id])||0)})[0]||entries[0];
+  var earliest=Math.min.apply(Math,times);var latest=Math.max.apply(Math,times);
+  return{id:id,title:pick.title||"(无标题)",entryIds:entries.map(function(e){return e.id}),sourceNames:sourceIds.map(function(fid){var f=feedMap[fid]||{};return f.title||f.url||fid}),sourceCount:sourceIds.length,size:entries.length,earliestAt:earliest,latestAt:latest,avgQualityScore:scores.length?Math.round(scores.reduce(function(a,b){return a+b},0)/scores.length):null,heat:heat(sourceIds.length,latest,entries.length)};
+}
+
+function renderRadar(){
+  var topics=radarTopics;
+  if(activeCat!=="all")topics=topics.filter(function(t){return t.entryIds.some(function(id){var e=allEntries.find(function(x){return x.id===id});return e&&visibleByCat(e)})});
+  header("热点雷达",topics.length+" 个话题 · "+allEntries.length+" 条内容");
+  if(!topics.length){empty("暂无热点话题","需要更多订阅内容和 AI 嵌入后才能聚合");return}
+  document.getElementById("entry-list").innerHTML='<div class="radar-wrap">'+topics.map(renderTopic).join("")+'</div>';
+}
+function renderTopic(t){
+  var open=expandedTopicId===t.id;
+  var h='<section class="radar-card '+(open?"open":"")+'"><button class="radar-main" data-topic="'+esc(t.id)+'"><div style="min-width:0;flex:1"><div class="radar-title-row"><span class="radar-title">'+esc(t.title)+'</span><span class="heat"><span class="heat-dot"></span>'+t.sourceCount+'源</span></div>';
+  h+='<div class="chips">'+t.sourceNames.slice(0,5).map(function(n){return '<span class="chip">'+esc(n.length>9?n.slice(0,9)+"...":n)+'</span>'}).join("")+(t.sourceNames.length>5?'<span class="chip">+'+(t.sourceNames.length-5)+'</span>':"")+'</div>';
+  h+='<div class="meta"><span>'+shortTime(t.earliestAt)+' -> '+shortTime(t.latestAt)+'</span><span>'+t.size+'条</span>'+(t.avgQualityScore!=null?'<span>质量 '+t.avgQualityScore+'</span>':"")+'</div></div><svg class="radar-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></button>';
+  h+='<div class="radar-entries">'+t.entryIds.slice(0,8).map(function(id){var e=allEntries.find(function(x){return x.id===id});if(!e)return"";return '<a class="radar-entry" href="'+esc(e.url||"#")+'" target="_blank" rel="noopener"><span class="radar-entry-title">'+esc(e.title||"(无标题)")+'</span><span class="time">'+when(e.publishedAt)+'</span></a>'}).join("")+'</div></section>';
+  return h;
+}
+
+document.addEventListener("click",function(ev){
+  var view=ev.target.closest("[data-view]");if(view){activeView=view.getAttribute("data-view");selectedFeedId=null;activeEntryId=null;render();closeMobile();return}
+  var feed=ev.target.closest("[data-feed]");if(feed){selectedFeedId=feed.getAttribute("data-feed");activeView="feed";activeEntryId=null;render();closeMobile();return}
+  var group=ev.target.closest("[data-group-toggle]");if(group){var g=group.getAttribute("data-group-toggle");expandedGroups[g]=!expandedGroups[g];renderSourceGroups();return}
+  var tab=ev.target.closest("[data-cat]");if(tab&&tab.classList.contains("tab")){activeCat=tab.getAttribute("data-cat");activeEntryId=null;render();return}
+  var cluster=ev.target.closest("[data-cluster]");if(cluster){var cid=cluster.getAttribute("data-cluster");expandedClusters[cid]=!expandedClusters[cid];renderTimeline();return}
+  var openEntry=ev.target.closest("[data-open-entry]");if(openEntry){var eid=openEntry.getAttribute("data-open-entry");activeEntryId=activeEntryId===eid?null:eid;renderTimeline();return}
+  var card=ev.target.closest("[data-entry-card]");if(card&&!ev.target.closest("a,button,.q-wrap")){var ceid=card.getAttribute("data-entry-card");activeEntryId=activeEntryId===ceid?null:ceid;renderTimeline();return}
+  var topic=ev.target.closest("[data-topic]");if(topic){var tid=topic.getAttribute("data-topic");expandedTopicId=expandedTopicId===tid?null:tid;renderRadar();return}
+});
+function closeMobile(){if(window.innerWidth<=520){document.getElementById("sidebar").classList.remove("open");document.getElementById("overlay").classList.remove("open")}}
+document.getElementById("mobile-toggle").addEventListener("click",function(){document.getElementById("sidebar").classList.toggle("open");document.getElementById("overlay").classList.toggle("open")});
+document.getElementById("overlay").addEventListener("click",closeMobile);
+
+var themeKey="finhot-theme";
+function applyTheme(t){if(t==="dark")document.documentElement.setAttribute("data-theme","dark");else if(t==="light")document.documentElement.setAttribute("data-theme","light");else document.documentElement.removeAttribute("data-theme");document.querySelectorAll(".theme-btn").forEach(function(b){b.classList.toggle("active",b.getAttribute("data-theme")===t)});try{localStorage.setItem(themeKey,t)}catch(e){}}
+document.querySelectorAll(".theme-btn").forEach(function(b){b.addEventListener("click",function(){applyTheme(b.getAttribute("data-theme"))})});
+try{applyTheme("light")}catch(e){applyTheme("light")}
+render();
+})();
+</script>
+</body>
+</html>`
 }
 
 // ─── Self-contained public reader HTML (pixel-perfect match to local React app) ───
