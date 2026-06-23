@@ -1,4 +1,4 @@
-import { FeedViewType, PRESET_FINANCE_FEEDS } from "@follow/constants"
+import { FeedViewType } from "@follow/constants"
 import type { CollectionSchema, EntrySchema, FeedSchema } from "@follow/database/schemas/types"
 import { applyLocalActionRulesToEntry, runLocalActionSideEffects } from "@follow/store/action/local"
 import { useActionStore } from "@follow/store/action/store"
@@ -475,41 +475,11 @@ const hasExistingLocalRssSubscriptions = () =>
     (subscription) => subscription.type === "feed" && !!subscription.feedId,
   )
 
-const DEFAULTS_CLEANED_KEY = "finhot:defaults-cleaned"
-
 /**
- * One-time cleanup: remove all preset/default finance feeds.
- * Keeps only user-added subscriptions (via AddBloggerPanel).
+ * No-op: auto-cleanup disabled. User manages subscriptions manually.
  */
 export async function cleanupDefaultFeedsIfNeeded(): Promise<void> {
-  try {
-    if (localStorage.getItem(DEFAULTS_CLEANED_KEY) === "1") return
-  } catch {
-    return
-  }
-
-  const presetUrls = new Set(PRESET_FINANCE_FEEDS.map((f) => f.url))
-  const state = useSubscriptionStore.getState()
-  const idsToRemove: string[] = []
-
-  for (const [id, sub] of Object.entries(state.data)) {
-    if (!sub?.feedId) continue
-    const feed = getFeedByIdOrUrl({ id: sub.feedId })
-    if (!feed?.url) continue
-    if (presetUrls.has(feed.url)) {
-      idsToRemove.push(id)
-    }
-  }
-
-  if (idsToRemove.length > 0) {
-    await subscriptionActions.unsubscribe(idsToRemove)
-  }
-
-  try {
-    localStorage.setItem(DEFAULTS_CLEANED_KEY, "1")
-  } catch {
-    // ignore
-  }
+  // Intentionally empty — user removes unwanted feeds via UI
 }
 
 export async function seedDefaultLocalRssFeedsIfNeeded(): Promise<{
