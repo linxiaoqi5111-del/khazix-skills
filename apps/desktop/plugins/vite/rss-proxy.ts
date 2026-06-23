@@ -2173,7 +2173,7 @@ function renderSmartNav(){
     {id:"smart-today",label:"今天",count:todayCount,ico:"today"},
     {id:"smart-unread",label:"全部未读",count:allEntries.length,ico:"unread"},
     {id:"smart-favorites",label:"收藏",count:0,ico:"star"},
-    {id:"smart-radar",label:"热点雷达",count:radarTopics.length,ico:"radar"}
+    {id:"smart-radar",label:"\u4ECA\u65E5\u70ED\u70B9 TOP",count:radarTopics.length,ico:"radar"}
   ];
   document.getElementById("smart-nav").innerHTML=items.map(function(it){
     return '<button class="nav-item '+(activeView===it.id?"active":"")+'" data-view="'+it.id+'"><span class="nav-ico">'+icon(it.ico)+'</span><span class="feed-name">'+it.label+'</span><span class="count">'+it.count+'</span></button>';
@@ -2289,16 +2289,21 @@ function makeTopic(id,ids){
 function renderRadar(){
   var topics=radarTopics;
   if(activeCat!=="all")topics=topics.filter(function(t){return t.entryIds.some(function(id){var e=allEntries.find(function(x){return x.id===id});return e&&visibleByCat(e)})});
-  header("热点雷达",topics.length+" 个话题 · "+allEntries.length+" 条内容");
-  if(!topics.length){empty("暂无热点话题","需要更多订阅内容和 AI 嵌入后才能聚合");return}
+  var selCount=topics.filter(function(t){return t.avgQualityScore!=null&&t.avgQualityScore>=70}).length;
+  header("\u4ECA\u65E5\u70ED\u70B9 TOP",selCount+" \u7CBE\u9009 · "+topics.length+" \u4E2A\u8BDD\u9898 · \u591A\u4FE1\u6E90\u805A\u5408");
+  if(!topics.length){empty("\u6682\u65E0\u70ED\u70B9\u8BDD\u9898","\u9700\u8981\u66F4\u591A\u8BA2\u9605\u5185\u5BB9\u548C AI \u5D4C\u5165\u540E\u624D\u80FD\u805A\u5408");return}
   document.getElementById("entry-list").innerHTML='<div class="radar-wrap">'+topics.map(renderTopic).join("")+'</div>';
 }
 function renderTopic(t){
   var open=expandedTopicId===t.id;
-  var h='<section class="radar-card '+(open?"open":"")+'"><button class="radar-main" data-topic="'+esc(t.id)+'"><div style="min-width:0;flex:1"><div class="radar-title-row"><span class="radar-title">'+esc(t.title)+'</span><span class="heat"><span class="heat-dot"></span>'+t.sourceCount+'源</span></div>';
+  var topicSel=t.avgQualityScore!=null&&t.avgQualityScore>=70?"\u7CBE\u9009":t.avgQualityScore!=null&&t.avgQualityScore>=40?"\u89C2\u5BDF":"";
+  var h='<section class="radar-card '+(open?"open":"")+'"><button class="radar-main" data-topic="'+esc(t.id)+'">';
+  h+='<div style="min-width:0;flex:1"><div class="radar-title-row"><span class="radar-title">'+esc(t.title)+'</span>';
+  if(topicSel)h+='<span class="q q-'+(t.avgQualityScore>=70?"high":"medium")+'">'+topicSel+" "+t.avgQualityScore+'</span>';
+  h+='<span class="heat"><span class="heat-dot"></span>\u540C\u4E00\u4E8B\u4EF6 \u00B7 '+t.sourceCount+' \u5BB6\u62A5\u9053</span></div>';
   h+='<div class="chips">'+t.sourceNames.slice(0,5).map(function(n){return '<span class="chip">'+esc(n.length>9?n.slice(0,9)+"...":n)+'</span>'}).join("")+(t.sourceNames.length>5?'<span class="chip">+'+(t.sourceNames.length-5)+'</span>':"")+'</div>';
-  h+='<div class="meta"><span>'+shortTime(t.earliestAt)+' -> '+shortTime(t.latestAt)+'</span><span>'+t.size+'条</span>'+(t.avgQualityScore!=null?'<span>质量 '+t.avgQualityScore+'</span>':"")+'</div></div><svg class="radar-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></button>';
-  h+='<div class="radar-entries">'+t.entryIds.slice(0,8).map(function(id){var e=allEntries.find(function(x){return x.id===id});if(!e)return"";return '<a class="radar-entry" href="'+esc(e.url||"#")+'" target="_blank" rel="noopener"><span class="radar-entry-title">'+esc(e.title||"(无标题)")+'</span><span class="time">'+when(e.publishedAt)+'</span></a>'}).join("")+'</div></section>';
+  h+='<div class="meta"><span>'+shortTime(t.earliestAt)+' \u2192 '+shortTime(t.latestAt)+'</span><span>'+t.size+'\u6761</span></div></div><svg class="radar-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></button>';
+  h+='<div class="radar-entries">'+t.entryIds.slice(0,8).map(function(id){var e=allEntries.find(function(x){return x.id===id});if(!e)return"";var ren=enrichments[e.id]||{};var rsl=selLabel(ren);var f=feedMap[e.feedId]||{};return '<a class="radar-entry" href="'+esc(e.url||"#")+'" target="_blank" rel="noopener"><span class="feed-dot" style="font-size:9px">'+esc(initial(f.title||f.url))+'</span><span class="radar-entry-title">'+esc(e.title||"(\u65E0\u6807\u9898)")+'</span>'+(rsl?'<span class="q q-'+((scoreVal(ren)||0)>=70?"high":"medium")+'" style="font-size:10px">'+esc(rsl)+'</span>':"")+'<span class="time">'+when(e.publishedAt)+'</span></a>'}).join("")+'</div></section>';
   return h;
 }
 
