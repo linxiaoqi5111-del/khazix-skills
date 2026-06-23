@@ -5,7 +5,6 @@ import { StableRouterProvider } from "@follow/components/providers/stable-router
 import { Toaster } from "@follow/components/ui/toast/index.jsx"
 import { IN_ELECTRON, LOCAL_RSS_MODE } from "@follow/shared/constants"
 import { env } from "@follow/shared/env.desktop"
-import { ReactQueryDevtools } from "@tanstack/react-query-devtools"
 import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client"
 import { Provider } from "jotai"
 import type { FC, PropsWithChildren } from "react"
@@ -83,12 +82,7 @@ export const RootProviders: FC<PropsWithChildren> = ({ children }) => (
   </Provider>
 )
 
-const Devtools = () =>
-  !IN_ELECTRON && (
-    <div className="hidden lg:block print:hidden">
-      <ReactQueryDevtools buttonPosition="bottom-left" client={queryClient} />
-    </div>
-  )
+const Devtools = () => null
 
 const RecaptchaProvider: FC<PropsWithChildren> = ({ children }) => {
   const siteKey = env.VITE_RECAPTCHA_V3_SITE_KEY
