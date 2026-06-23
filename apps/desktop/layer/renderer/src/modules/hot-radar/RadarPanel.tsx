@@ -23,6 +23,17 @@ function formatRelativeTime(timestamp: number): string {
   return `${days}天前`
 }
 
+function formatTimeShort(timestamp: number): string {
+  const d = new Date(timestamp)
+  const now = new Date()
+  const hh = String(d.getHours()).padStart(2, "0")
+  const mm = String(d.getMinutes()).padStart(2, "0")
+  if (d.toDateString() === now.toDateString()) return `${hh}:${mm}`
+  const month = d.getMonth() + 1
+  const day = d.getDate()
+  return `${month}/${day} ${hh}:${mm}`
+}
+
 function getHeatColor(heat: number): string {
   if (heat >= 8) return "text-red"
   if (heat >= 5) return "text-orange"
@@ -118,7 +129,9 @@ const TopicCard = memo(
             </div>
 
             <div className="flex items-center gap-3 text-[11px] text-text-tertiary">
-              <span>{formatRelativeTime(topic.latestAt)}</span>
+              <span>
+                {formatTimeShort(topic.earliestAt)} → {formatTimeShort(topic.latestAt)}
+              </span>
               <span>{topic.size}条</span>
               {topic.avgQualityScore !== null && <span>质量 {topic.avgQualityScore}</span>}
             </div>

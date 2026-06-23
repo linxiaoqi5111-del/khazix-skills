@@ -43,6 +43,8 @@ export type ClusterOptions = {
   tau?: number
   tauDup?: number
   minSize?: number
+  /** Maximum time gap (ms) between two entries to allow linking. If set, entries further apart in time won't cluster even if cosine >= tau. */
+  maxTimeGap?: number
 }
 
 const DEFAULT_TAU = 0.82
@@ -121,9 +123,15 @@ export const clusterEntries = (
     valid.push({ item, unit: vector.map((value) => value / magnitude) })
   }
 
+  const maxTimeGap = options.maxTimeGap ?? 0
+
   const uf = new UnionFind(valid.length)
   for (let i = 0; i < valid.length; i++) {
     for (let j = i + 1; j < valid.length; j++) {
+      if (maxTimeGap > 0) {
+        const timeDiff = Math.abs(valid[i]!.item.publishedAt - valid[j]!.item.publishedAt)
+        if (timeDiff > maxTimeGap) continue
+      }
       const cosine = dot(valid[i]!.unit, valid[j]!.unit)
       if (cosine >= tau) uf.union(i, j)
     }
