@@ -39,19 +39,19 @@ try {
 
   const page = context.pages()[0] || (await context.newPage())
 
-  // Solve WAF: visit homepage first
+  // Solve WAF: visit homepage first (don't use networkidle — xueqiu never stops polling)
   await page.goto("https://xueqiu.com", {
-    waitUntil: "networkidle",
-    timeout: 30_000,
+    waitUntil: "domcontentloaded",
+    timeout: 45_000,
   })
-  await page.waitForTimeout(3_000)
+  await page.waitForTimeout(5_000)
 
   // Visit user page to establish context
   await page.goto(`https://xueqiu.com/u/${userId}`, {
-    waitUntil: "networkidle",
-    timeout: 30_000,
+    waitUntil: "domcontentloaded",
+    timeout: 45_000,
   })
-  await page.waitForTimeout(2_000)
+  await page.waitForTimeout(3_000)
 
   // Fetch timeline API from browser context (inherits WAF cookies)
   const timeline = await page.evaluate(async (uid) => {
