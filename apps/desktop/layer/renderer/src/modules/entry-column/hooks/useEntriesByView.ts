@@ -228,11 +228,18 @@ const useLocalEntries = (): UseEntriesReturn => {
     ids: new Set<string>(),
   })
 
+  const platformFilter = usePlatformFilter()
+
   const allEntries = useEntryStore(
     useCallback(
       (state) => {
         let ids: string[]
-        if (smartFeed === "starred") {
+
+        // In LOCAL_RSS_MODE, platform tabs override sidebar selection:
+        // show ALL entries then let the platform filter narrow them down.
+        if (LOCAL_RSS_MODE && platformFilter !== "all") {
+          ids = Array.from(state.entryIdSet)
+        } else if (smartFeed === "starred") {
           ids = allCollectionEntryIds ?? []
         } else if (isVirtualScope) {
           ids = entryIdsByView ?? []
@@ -240,7 +247,6 @@ const useLocalEntries = (): UseEntriesReturn => {
           ids = entryIdsByCollections ?? []
         } else if (showEntriesByView) {
           // In LOCAL_RSS_MODE, entryIdByView may be empty due to hydration race
-          // (entries hydrate before subscriptions). Fall back to all entry IDs.
           if (LOCAL_RSS_MODE && (!entryIdsByView || entryIdsByView.length === 0)) {
             ids = Array.from(state.entryIdSet)
           } else {
@@ -314,6 +320,7 @@ const useLocalEntries = (): UseEntriesReturn => {
         tagsByEntryId,
         topicLabel,
         myTopic,
+        platformFilter,
       ],
     ),
   )
@@ -342,7 +349,6 @@ const useLocalEntries = (): UseEntriesReturn => {
   const admittedEntries = sortedEntries
 
   // Platform filter: filter entries by source platform tab
-  const platformFilter = usePlatformFilter()
   const platformFilteredEntries = useMemo(() => {
     if (platformFilter === "all") return admittedEntries
 
