@@ -51,7 +51,7 @@ import {
 } from "~/modules/starred-groups/store"
 
 import { aiTimelineEnabledAtom } from "../atoms/ai-timeline"
-import { getPlatformFromFeedUrl, usePlatformFilter } from "../atoms/platform-filter"
+import { getPlatformForFeed, usePlatformFilter } from "../atoms/platform-filter"
 import { recommendedTimelineEnabledAtom } from "../atoms/recommended-timeline"
 import { getVisibleLocalEntryIds } from "./filter-local-entry-ids"
 import { filterByAdmissionThreshold } from "./social-platform-admission"
@@ -355,7 +355,7 @@ const useLocalEntries = (): UseEntriesReturn => {
       const entry = entries[entryId]
       if (!entry?.feedId) return false
       const feedUrl = getFeedById(entry.feedId)?.url
-      return getPlatformFromFeedUrl(feedUrl) === platformFilter
+      return getPlatformForFeed(entry.feedId, feedUrl) === platformFilter
     })
   }, [admittedEntries, platformFilter])
 

@@ -1,3 +1,4 @@
+import { getSubscriptionByFeedId } from "@follow/store/subscription/getter"
 import { atom, useAtomValue, useSetAtom } from "jotai"
 
 export type PlatformFilter = "all" | "xueqiu" | "weibo" | "twitter" | "wechat" | "other"
@@ -17,15 +18,28 @@ export const PLATFORM_LABELS: Record<PlatformFilter, string> = {
 }
 
 /**
- * Determine which platform a feed URL belongs to.
+ * Determine which platform a feed belongs to.
+ * Checks feed URL patterns first, then falls back to subscription category.
  */
-export function getPlatformFromFeedUrl(feedUrl: string | undefined | null): PlatformFilter {
-  if (!feedUrl) return "other"
+export function getPlatformForFeed(
+  feedId: string | undefined | null,
+  feedUrl: string | undefined | null,
+): PlatformFilter {
+  if (!feedUrl && !feedId) return "other"
 
-  if (/^finhot:\/\/xueqiu\//.test(feedUrl)) return "xueqiu"
-  if (/^finhot:\/\/twitter\//.test(feedUrl)) return "twitter"
-  if (/\/weibo\//.test(feedUrl)) return "weibo"
-  if (/wechat|mp\.weixin/.test(feedUrl)) return "wechat"
+  // URL-based detection
+  if (feedUrl) {
+    if (/^finhot:\/\/xueqiu\//.test(feedUrl)) return "xueqiu"
+    if (/^finhot:\/\/twitter\//.test(feedUrl)) return "twitter"
+    if (/\/weibo\//.test(feedUrl)) return "weibo"
+    if (/wechat|mp\.weixin/.test(feedUrl)) return "wechat"
+  }
+
+  // Category-based detection (covers wechat2rss feeds whose URL is opaque)
+  if (feedId) {
+    const sub = getSubscriptionByFeedId(feedId)
+    if (sub?.category === "公众号") return "wechat"
+  }
 
   return "other"
 }
