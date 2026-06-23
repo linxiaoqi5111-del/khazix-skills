@@ -20,7 +20,11 @@ if (!userId || !/^\d+$/.test(userId)) {
   throw new Error("Usage: node xueqiu-scraper.mjs <userId>")
 }
 
-const PROFILE_DIR = "/tmp/xq-pw-profile"
+const PROFILE_DIR = process.env.XQ_PROFILE_DIR || (
+  process.platform === "darwin"
+    ? `${process.env.HOME}/.finhot/xq-pw-profile`
+    : "/tmp/xq-pw-profile"
+)
 
 let context
 try {
