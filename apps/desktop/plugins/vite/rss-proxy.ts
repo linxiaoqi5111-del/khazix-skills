@@ -46,9 +46,13 @@ interface CachedEntry {
 
 interface CachedEnrichment {
   summary?: string | null
+  /** Why this entry was selected — distinct from content summary */
+  recommendationReason?: string | null
   tags?: string[]
   qualityScore?: number | null
   qualityTier?: string | null
+  /** Selection status: "selected" (≥70), "watch" (40-69), "noise" (<40) */
+  selected?: "selected" | "watch" | "noise" | null
   qualityDetails?: {
     contentTypes?: Record<string, number>
     scores?: Record<string, number>
@@ -63,6 +67,10 @@ interface CachedEnrichment {
     content?: string | null
     readabilityContent?: string | null
   }
+  /** Cluster ID (leader entry id) for multi-source event grouping */
+  clusterId?: string | null
+  /** Related entry IDs in the same event cluster */
+  relatedEntryIds?: string[]
   embedding?: number[]
 }
 
@@ -110,6 +118,91 @@ function readManifest(): FeedCacheManifest {
 
 function writeManifest(manifest: FeedCacheManifest) {
   writeFileSync(join(cacheDir, "manifest.json"), JSON.stringify(manifest, null, 2))
+}
+
+/** Derive selection status from quality score */
+function deriveSelected(en: CachedEnrichment): "selected" | "watch" | "noise" | null {
+  if (en.selected) return en.selected
+  if (en.qualityScore == null) return null
+  if (en.qualityScore >= 70) return "selected"
+  if (en.qualityScore >= 40) return "watch"
+  return "noise"
+}
+
+/** Selection label for display */
+function selectionLabel(sel: string | null, score: number | null): string {
+  if (!sel || score == null) return ""
+  if (sel === "selected") return `精选 ${score}`
+  if (sel === "watch") return `观察 ${score}`
+  return ""
+}
+
+/** Load all cached entries sorted by time */
+function loadAllCachedEntries(): CachedEntry[] {
+  const manifest = readManifest()
+  const allEntries: CachedEntry[] = []
+  for (const feedKey of Object.keys(manifest.feeds)) {
+    const entriesFile = join(cacheDir, "entries", `${feedKey}.json`)
+    if (!existsSync(entriesFile)) continue
+    try {
+      const feedEntries: CachedEntry[] = JSON.parse(readFileSync(entriesFile, "utf-8"))
+      allEntries.push(...feedEntries)
+    } catch { /* skip */ }
+  }
+  allEntries.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())
+  return allEntries
+}
+
+/** Build RSS 2.0 XML from entries */
+function buildRssXml(
+  title: string,
+  description: string,
+  link: string,
+  entries: CachedEntry[],
+  enrichments: EnrichmentMap,
+  feedMap: Record<string, CachedFeed>,
+): string {
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+
+  let items = ""
+  for (const e of entries.slice(0, 100)) {
+    const en = enrichments[e.id]
+    const feedTitle = feedMap[e.feedId]?.title ?? ""
+    const summary = en?.summary ?? ""
+    const reason = en?.recommendationReason ?? ""
+    const sel = deriveSelected(en ?? {})
+    const scoreLabel = selectionLabel(sel, en?.qualityScore ?? null)
+
+    let desc = ""
+    if (scoreLabel) desc += `【${scoreLabel}】`
+    if (reason) desc += `${reason} `
+    if (summary) desc += summary
+    if (!desc) desc = e.description ?? ""
+    desc = desc.slice(0, 500)
+
+    items += `<item>
+<title>${esc(e.title ?? "")}</title>
+<link>${esc(e.url ?? "")}</link>
+<guid isPermaLink="false">${esc(e.id)}</guid>
+<pubDate>${new Date(e.publishedAt).toUTCString()}</pubDate>
+<description>${esc(desc)}</description>
+<author>${esc(e.author ?? feedTitle)}</author>
+${en?.tags?.length ? en.tags.map((t) => `<category>${esc(t)}</category>`).join("") : ""}
+</item>\n`
+  }
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+<channel>
+<title>${esc(title)}</title>
+<link>${esc(link)}</link>
+<description>${esc(description)}</description>
+<language>zh-CN</language>
+<generator>FinHot</generator>
+<lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
+${items}
+</channel>
+</rss>`
 }
 
 function cacheFeedResult(
