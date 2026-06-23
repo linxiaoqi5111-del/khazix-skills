@@ -44,6 +44,16 @@ interface CachedEntry {
   feedId: string
 }
 
+interface CachedEnrichment {
+  summary?: string | null
+  tags?: string[]
+  qualityScore?: number | null
+  qualityTier?: string | null
+  embedding?: number[]
+}
+
+type EnrichmentMap = Record<string, CachedEnrichment>
+
 interface FeedCacheManifest {
   feeds: Record<string, CachedFeed>
   updatedAt: string
@@ -58,6 +68,20 @@ function ensureCacheDir(rootDir: string) {
   const entriesDir = join(cacheDir, "entries")
   if (!existsSync(entriesDir)) mkdirSync(entriesDir, { recursive: true })
   return cacheDir
+}
+
+function readEnrichments(): EnrichmentMap {
+  const file = join(cacheDir, "enrichments.json")
+  if (!existsSync(file)) return {}
+  try {
+    return JSON.parse(readFileSync(file, "utf-8"))
+  } catch {
+    return {}
+  }
+}
+
+function writeEnrichments(data: EnrichmentMap) {
+  writeFileSync(join(cacheDir, "enrichments.json"), JSON.stringify(data))
 }
 
 function readManifest(): FeedCacheManifest {
@@ -1343,16 +1367,142 @@ export function rssProxyPlugin(): PluginOption {
           .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())
           .slice(0, 100)
 
+        const enrichments = readEnrichments()
         const feedsJson = JSON.stringify(feeds)
         const entriesByFeedJson = JSON.stringify(entriesByFeed)
         const allEntriesJson = JSON.stringify(allEntries)
+        const enrichmentsJson = JSON.stringify(enrichments)
 
-        const html = buildPublicPageHtml(feedsJson, entriesByFeedJson, allEntriesJson)
+        const html = buildPublicPageHtml(
+          feedsJson,
+          entriesByFeedJson,
+          allEntriesJson,
+          enrichmentsJson,
+        )
         res.writeHead(200, {
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "public, max-age=30",
         })
         res.end(html)
+      })
+
+      // ─── /api/public/sync-enrichment — Browser pushes AI enrichment data to server cache ───
+      server.middlewares.use("/api/public/sync-enrichment", async (req, res) => {
+        if (handleCors(req, res)) return
+        if (req.method !== "POST") {
+          res.writeHead(405, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: "Method not allowed" }))
+          return
+        }
+        try {
+          const body = await new Promise<string>((resolve) => {
+            let data = ""
+            req.on("data", (chunk: Buffer) => {
+              data += chunk.toString()
+            })
+            req.on("end", () => resolve(data))
+          })
+          const incoming: EnrichmentMap = JSON.parse(body)
+          const existing = readEnrichments()
+          for (const [entryId, enrichment] of Object.entries(incoming)) {
+            existing[entryId] = { ...existing[entryId], ...enrichment }
+          }
+          writeEnrichments(existing)
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+          })
+          res.end(JSON.stringify({ ok: true, count: Object.keys(incoming).length }))
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "Unknown error"
+          res.writeHead(500, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: message }))
+        }
+      })
+
+      // ─── /api/public/deploy — Build static HTML and deploy to Cloudflare Pages ───
+      server.middlewares.use("/api/public/deploy", async (req, res) => {
+        if (handleCors(req, res)) return
+        if (req.method !== "POST") {
+          res.writeHead(405, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: "Method not allowed" }))
+          return
+        }
+        try {
+          const body = await new Promise<string>((resolve) => {
+            let data = ""
+            req.on("data", (chunk: Buffer) => {
+              data += chunk.toString()
+            })
+            req.on("end", () => resolve(data))
+          })
+          const { cfApiToken, cfAccountId } = JSON.parse(body || "{}")
+          if (!cfApiToken || !cfAccountId) {
+            res.writeHead(400, { "Content-Type": "application/json" })
+            res.end(JSON.stringify({ error: "cfApiToken and cfAccountId required" }))
+            return
+          }
+
+          // Build HTML from cache
+          const manifest = readManifest()
+          const feeds = Object.values(manifest.feeds).sort(
+            (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+          )
+          const entriesByFeed: Record<string, CachedEntry[]> = {}
+          for (const feed of feeds) {
+            const entriesFile = join(cacheDir, "entries", `${feed.id}.json`)
+            if (existsSync(entriesFile)) {
+              try {
+                entriesByFeed[feed.id] = JSON.parse(readFileSync(entriesFile, "utf-8"))
+              } catch {
+                /* skip */
+              }
+            }
+          }
+          const allEntries = Object.values(entriesByFeed)
+            .flat()
+            .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())
+            .slice(0, 200)
+
+          const enrichments = readEnrichments()
+          const html = buildPublicPageHtml(
+            JSON.stringify(feeds),
+            JSON.stringify(entriesByFeed),
+            JSON.stringify(allEntries),
+            JSON.stringify(enrichments),
+          )
+
+          // Deploy to Cloudflare Pages via wrangler CLI
+          const { execSync } = await import("node:child_process")
+          const tmpDir = join(cacheDir, "_pages_deploy")
+          if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true })
+          writeFileSync(join(tmpDir, "index.html"), html, "utf-8")
+
+          const wranglerResult = execSync(
+            `npx wrangler pages deploy "${tmpDir}" --project-name finhot --branch main --commit-dirty=true`,
+            {
+              env: {
+                ...process.env,
+                CLOUDFLARE_API_TOKEN: cfApiToken,
+                CLOUDFLARE_ACCOUNT_ID: cfAccountId,
+              },
+              timeout: 120_000,
+              encoding: "utf-8",
+            },
+          )
+          const urlMatch = wranglerResult.match(/https:\/\/[a-z0-9]+\.finhot\.pages\.dev/)
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+          })
+          res.end(
+            JSON.stringify({ ok: true, url: urlMatch?.[0] ?? "https://finhot.industry7view.com" }),
+          )
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "Unknown error"
+          res.writeHead(500, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: message }))
+        }
       })
     },
   }
@@ -1363,6 +1513,7 @@ function buildPublicPageHtml(
   feedsJson: string,
   entriesByFeedJson: string,
   allEntriesJson: string,
+  enrichmentsJson: string,
 ): string {
   return `<!DOCTYPE html>
 <html lang="zh-CN">
@@ -1430,6 +1581,34 @@ a{color:inherit;text-decoration:none}
 .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:300px;color:var(--text-tert);font-size:14px;gap:8px}
 .empty svg{width:48px;height:48px;opacity:0.3}
 
+/* ── AI Summary Card ── */
+.ai-summary{margin-top:10px;position:relative;overflow:hidden;border-radius:12px;border:1px solid rgba(147,51,234,0.2);padding:12px 16px;backdrop-filter:blur(16px);background:linear-gradient(to bottom,rgba(147,51,234,0.04),rgba(255,255,255,0.5),rgba(59,130,246,0.03));box-shadow:0 1px 4px rgba(147,51,234,0.06)}
+@media(prefers-color-scheme:dark){.ai-summary{border-color:rgba(147,51,234,0.25);background:linear-gradient(to bottom,rgba(147,51,234,0.08),rgba(30,30,46,0.6),rgba(59,130,246,0.05));box-shadow:0 1px 4px rgba(147,51,234,0.12)}}
+.ai-summary-header{display:flex;align-items:center;gap:6px;margin-bottom:6px;font-size:11px;font-weight:600;color:rgba(147,51,234,0.8)}
+@media(prefers-color-scheme:dark){.ai-summary-header{color:rgba(167,139,250,0.9)}}
+.ai-icon{width:14px;height:14px;animation:ai-pulse 2s ease-in-out infinite}
+@keyframes ai-pulse{0%,100%{opacity:0.7}50%{opacity:1}}
+.ai-summary-text{font-size:12.5px;line-height:1.7;color:var(--text-sec)}
+
+/* ── AI Tags ── */
+.ai-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+.ai-tag{font-size:10px;padding:2px 8px;border-radius:4px;background:var(--tag-bg);color:var(--tag-text);font-weight:500}
+
+/* ── Quality Score Badge ── */
+.q-score{display:inline-flex;align-items:center;justify-content:center;min-width:28px;padding:1px 6px;border-radius:4px;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums}
+.q-high{background:rgba(34,197,94,0.15);color:#16a34a;border:1px solid rgba(34,197,94,0.25)}
+.q-medium{background:rgba(234,179,8,0.12);color:#ca8a04;border:1px solid rgba(234,179,8,0.18)}
+.q-low{background:rgba(148,163,184,0.12);color:var(--text-sec);border:1px solid rgba(148,163,184,0.12)}
+@media(prefers-color-scheme:dark){.q-high{background:rgba(34,197,94,0.12);color:#4ade80}.q-medium{background:rgba(234,179,8,0.1);color:#facc15}}
+
+/* ── Cluster Badge ── */
+.cluster-badge{display:inline-flex;align-items:center;gap:3px;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:500;cursor:pointer;transition:all 0.15s;font-variant-numeric:tabular-nums;background:rgba(59,130,246,0.08);color:#3b82f6;border:1px solid rgba(59,130,246,0.15)}
+.cluster-badge:hover{background:rgba(59,130,246,0.15)}
+.cluster-badge.expanded{background:rgba(13,148,136,0.1);color:var(--accent);border-color:var(--accent-border)}
+.cluster-member{border-left:3px solid rgba(59,130,246,0.3);margin-left:48px;opacity:0.85}
+.cluster-member .card{border-left:none;border-radius:8px}
+@media(max-width:768px){.cluster-member{margin-left:24px}}
+
 /* ── Mobile toggle ── */
 .mobile-toggle{display:none;position:fixed;top:12px;left:12px;z-index:60;width:36px;height:36px;border:none;border-radius:8px;background:var(--bg-card);box-shadow:0 1px 4px rgba(0,0,0,0.1);cursor:pointer;color:var(--text);align-items:center;justify-content:center}
 .overlay{display:none;position:fixed;inset:0;z-index:40;background:rgba(0,0,0,0.3)}
@@ -1492,6 +1671,7 @@ a{color:inherit;text-decoration:none}
 var feeds=${feedsJson};
 var entriesByFeed=${entriesByFeedJson};
 var allEntries=${allEntriesJson};
+var enrichments=${enrichmentsJson};
 var selectedFeedId=null;
 var feedMap={};
 feeds.forEach(function(f){feedMap[f.id]=f});
@@ -1529,6 +1709,61 @@ var allBtn=document.querySelector('.nav-item[data-id="__all__"]');
 if(allBtn){allBtn.className="nav-item"+(selectedFeedId===null?" active":"")}
 }
 
+// Simple cosine similarity for clustering
+function cosSim(a,b){if(!a||!b||a.length!==b.length)return 0;var dot=0,na=0,nb=0;for(var i=0;i<a.length;i++){dot+=a[i]*b[i];na+=a[i]*a[i];nb+=b[i]*b[i]}return na&&nb?dot/Math.sqrt(na*nb):0}
+
+// Build clusters from enrichment embeddings
+var expandedClusters={};
+function buildClusters(entryList){
+var SIM=0.82,TIME_MS=86400000;
+var items=entryList.map(function(e){
+var en=enrichments[e.id];
+return en&&en.embedding?{id:e.id,vec:en.embedding,time:new Date(e.publishedAt).getTime(),feedId:e.feedId}:null;
+}).filter(Boolean);
+var leaders={},memberOf={};
+for(var i=0;i<items.length;i++){
+if(memberOf[items[i].id])continue;
+var cluster=[items[i].id];
+for(var j=i+1;j<items.length;j++){
+if(memberOf[items[j].id])continue;
+if(Math.abs(items[i].time-items[j].time)>TIME_MS)continue;
+if(items[i].feedId===items[j].feedId)continue;
+if(cosSim(items[i].vec,items[j].vec)>=SIM){
+cluster.push(items[j].id);
+memberOf[items[j].id]=items[i].id;
+}
+}
+if(cluster.length>1)leaders[items[i].id]=cluster;
+}
+return{leaders:leaders,memberOf:memberOf};
+}
+
+function scoreTier(s){return s>=70?"high":s>=40?"medium":"low"}
+
+// AI icon SVG
+var aiIconSvg='<svg class="ai-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 2a4 4 0 0 1 4 4v1a4 4 0 0 1-8 0V6a4 4 0 0 1 4-4z"/><path d="M18 14c2 1 3 3 3 5v2H3v-2c0-2 1-4 3-5"/><circle cx="12" cy="18" r="1"/></svg>';
+
+// Render a single card
+function renderCard(e,isClusterMember){
+var en=enrichments[e.id]||{};
+var snippet=en.summary||strip(e.description||e.content||"").slice(0,280);
+var feedTitle=feedMap[e.feedId]?feedMap[e.feedId].title:"";
+var cat=feedMap[e.feedId]?feedMap[e.feedId].category:"";
+var h='<div class="card"><div class="card-source"><span class="source-name">'+esc(feedTitle)+'</span><div style="display:flex;align-items:center;gap:6px">';
+if(en.qualityScore!=null){var tier=scoreTier(en.qualityScore);h+='<span class="q-score q-'+tier+'">'+en.qualityScore+'</span>'}
+h+='<span class="source-name">'+timeAgo(e.publishedAt)+'</span></div></div>';
+if(e.title)h+='<a class="card-title" href="'+(e.url||"#")+'" target="_blank" rel="noopener">'+esc(e.title)+'</a>';
+if(!en.summary&&snippet)h+='<div class="card-desc">'+esc(snippet)+'</div>';
+if(en.summary){h+='<div class="ai-summary"><div class="ai-summary-header">'+aiIconSvg+' AI 解读</div><div class="ai-summary-text">'+esc(en.summary)+'</div></div>'}
+// Tags row
+var tagsHtml="";
+if(cat)tagsHtml+='<span class="tag">'+esc(cat)+'</span>';
+if(en.tags&&en.tags.length){en.tags.forEach(function(t){tagsHtml+='<span class="ai-tag">'+esc(t)+'</span>'})}
+if(tagsHtml)h+='<div class="card-tags">'+tagsHtml+'</div>';
+h+='</div>';
+return h;
+}
+
 // Render timeline
 function renderTimeline(){
 var entries=selectedFeedId?((entriesByFeed[selectedFeedId]||[]).slice(0,80)):allEntries;
@@ -1541,6 +1776,8 @@ var f=feedMap[e.feedId];return f&&f.category===activeCat;
 document.getElementById("header-title").textContent=selectedFeedId?(feedMap[selectedFeedId]?feedMap[selectedFeedId].title:"动态"):"全部动态";
 document.getElementById("header-sub").textContent=entries.length+" 条内容"+(selectedFeedId?"":(" · "+feeds.length+" 个信源"));
 if(!entries.length){document.getElementById("timeline").innerHTML='<div class="empty"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 8v4l3 3"/><circle cx="12" cy="12" r="10"/></svg><div>暂无内容</div></div>';return}
+
+var cl=buildClusters(entries);
 // Group by date
 var groups={};var order=[];
 entries.forEach(function(e){
@@ -1552,15 +1789,18 @@ var html="";
 order.forEach(function(dk){
 html+='<div class="date-group"><div class="date-label">'+fmtDate(groups[dk][0].publishedAt)+'</div>';
 groups[dk].forEach(function(e){
-var snippet=strip(e.description||e.content||"").slice(0,280);
-var feedTitle=feedMap[e.feedId]?feedMap[e.feedId].title:"";
-var cat=feedMap[e.feedId]?feedMap[e.feedId].category:"";
-html+='<div class="timeline-item"><div class="time-col">'+fmtTime(e.publishedAt)+'</div>';
-html+='<div class="card"><div class="card-source"><span class="source-name">'+esc(feedTitle)+'</span><span class="source-name">'+timeAgo(e.publishedAt)+'</span></div>';
-if(e.title)html+='<a class="card-title" href="'+(e.url||"#")+'" target="_blank" rel="noopener">'+esc(e.title)+'</a>';
-if(snippet)html+='<div class="card-desc">'+esc(snippet)+'</div>';
-if(cat)html+='<div class="card-tags"><span class="tag">'+esc(cat)+'</span></div>';
-html+='</div></div>';
+// Skip cluster members unless expanded
+if(cl.memberOf[e.id]&&!expandedClusters[cl.memberOf[e.id]])return;
+var isClusterMember=!!cl.memberOf[e.id];
+html+='<div class="timeline-item'+(isClusterMember?" cluster-member":"")+'"><div class="time-col">'+fmtTime(e.publishedAt)+'</div>';
+html+=renderCard(e,isClusterMember);
+// Cluster badge for leaders
+if(cl.leaders[e.id]){
+var count=cl.leaders[e.id].length-1;
+var isExp=!!expandedClusters[e.id];
+html+='<div style="margin:-6px 0 8px 64px"><button class="cluster-badge'+(isExp?" expanded":"")+'" data-cluster="'+esc(e.id)+'">+'+count+' 相关</button></div>';
+}
+html+='</div>';
 });
 html+='</div>';
 });
@@ -1576,6 +1816,13 @@ var id=navItem.getAttribute("data-id");
 selectedFeedId=id==="__all__"?null:id;
 renderFeeds();renderTimeline();
 if(window.innerWidth<=768){document.getElementById("sidebar").classList.remove("open");document.getElementById("overlay").classList.remove("open")}
+return;
+}
+var clBtn=ev.target.closest(".cluster-badge");
+if(clBtn){
+var cid=clBtn.getAttribute("data-cluster");
+expandedClusters[cid]=!expandedClusters[cid];
+renderTimeline();
 return;
 }
 var tab=ev.target.closest(".tab");
