@@ -49,6 +49,11 @@ interface CachedEnrichment {
   tags?: string[]
   qualityScore?: number | null
   qualityTier?: string | null
+  qualityPositiveReasons?: string[]
+  qualityNegativeReasons?: string[]
+  qualityDimensions?: Record<string, number>
+  qualityConfidence?: number
+  qualitySummary?: string
   embedding?: number[]
 }
 
@@ -1395,6 +1400,21 @@ export function rssProxyPlugin(): PluginOption {
         res.end(html)
       })
 
+      // ─── /api/public/enrichments — Return cached enrichments (for React SPA) ───
+      server.middlewares.use("/api/public/enrichments", async (_req, res) => {
+        const enrichments = readEnrichments()
+        const result: Record<string, unknown> = {}
+        for (const [id, en] of Object.entries(enrichments)) {
+          const { embedding, ...rest } = en as CachedEnrichment & { embedding?: number[] }
+          result[id] = rest
+        }
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Cache-Control": "public, max-age=30",
+        })
+        res.end(JSON.stringify(result))
+      })
+
       // ─── /api/public/sync-enrichment — Browser pushes AI enrichment data to server cache ───
       server.middlewares.use("/api/public/sync-enrichment", async (req, res) => {
         if (handleCors(req, res)) return
@@ -1661,6 +1681,9 @@ a{color:inherit;text-decoration:none}
   transition:all 0.15s;
 }
 .card:hover{border-color:hsl(var(--border));background:color-mix(in srgb, rgba(var(--color-fillQuaternary)) 100%, transparent)}
+.card:active{transform:scale(0.99);background:color-mix(in srgb, rgba(var(--color-fillTertiary)) 100%, transparent)}
+.card.selected{border-color:hsl(var(--fo-a) / 0.4);background:hsl(var(--fo-a) / 0.06)}
+.card{cursor:pointer}
 /* Unread indicator: border-l-2 border-l-accent */
 .card.unread{border-left:2px solid hsl(var(--fo-a))}
 
@@ -1691,6 +1714,25 @@ a{color:inherit;text-decoration:none}
 .q-low{background:rgb(var(--color-gray) / 0.15);color:color-mix(in srgb, rgba(var(--color-textSecondary)) 100%, transparent);border:1px solid rgb(var(--color-gray) / 0.15)}
 /* bg-gray/10 text-text-tertiary border border-gray/10 */
 .q-ignore{background:rgb(var(--color-gray) / 0.1);color:color-mix(in srgb, rgba(var(--color-textTertiary)) 100%, transparent);border:1px solid rgb(var(--color-gray) / 0.1)}
+/* Score tooltip (matches EntryQualityScoreBadge HoverCard) */
+.q-wrap{position:relative;display:inline-flex}
+.q-wrap:hover .q-tip{opacity:1;visibility:visible;transform:translateY(0)}
+.q-tip{position:absolute;top:calc(100% + 8px);right:0;z-index:100;width:280px;padding:12px;border-radius:12px;
+  background:rgb(var(--color-background));border:1px solid hsl(var(--border));
+  box-shadow:0 6px 20px rgba(0,0,0,0.08),0 4px 12px rgba(0,0,0,0.05),0 2px 6px rgba(0,0,0,0.04);
+  font-size:11px;line-height:1.5;color:color-mix(in srgb, rgba(var(--color-text)) 100%, transparent);
+  opacity:0;visibility:hidden;transform:translateY(-4px);transition:all 0.15s ease;pointer-events:none}
+.q-wrap:hover .q-tip{pointer-events:auto}
+.q-tip-title{font-weight:600;margin-bottom:4px}
+.q-tip-conf{color:color-mix(in srgb, rgba(var(--color-textSecondary)) 100%, transparent);margin-bottom:6px}
+.q-tip-summary{margin-bottom:8px}
+.q-tip-section{margin-bottom:6px}
+.q-tip-label{font-weight:500;margin-bottom:2px}
+.q-tip-label.positive{color:rgb(var(--color-green))}
+.q-tip-label.negative{color:rgb(var(--color-orange))}
+.q-tip-dims{display:grid;grid-template-columns:1fr 1fr;gap:1px 12px}
+.q-tip-reasons{list-style:disc;padding-left:16px;margin:0}
+.q-tip-reasons li{margin:1px 0}
 
 /* ── Title (mt-1.5 text-[14px] font-semibold leading-snug text-text) ── */
 .card-title{display:block;margin-top:6px;font-size:14px;font-weight:600;line-height:1.375;
@@ -1740,7 +1782,44 @@ a{color:inherit;text-decoration:none}
   .tabs{padding:4px 12px 6px}
   .entry-list{padding:0 0 24px}
   .card{margin:4px;padding:10px 12px}
+  .detail-panel{position:fixed;right:0;top:0;bottom:0;width:100%;max-width:100%}
+  .detail-panel .dp-close{top:8px;right:8px}
 }
+
+/* ── Detail panel (matches local app right panel) ── */
+.main-split{display:flex;flex:1;min-width:0;min-height:0}
+.main-entries{flex:1;display:flex;flex-direction:column;min-width:0}
+.detail-panel{width:0;flex-shrink:0;overflow:hidden;transition:width 0.25s ease;border-left:1px solid hsl(var(--border));background:hsl(var(--background))}
+.detail-panel.open{width:50%}
+.dp-inner{width:100%;height:100%;display:flex;flex-direction:column;overflow:hidden;min-width:400px}
+.dp-header{display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid hsl(var(--border));flex-shrink:0}
+.dp-close{width:28px;height:28px;border:none;background:none;cursor:pointer;border-radius:6px;display:flex;align-items:center;justify-content:center;
+  color:color-mix(in srgb, rgba(var(--color-textSecondary)) 100%, transparent);transition:all 0.15s}
+.dp-close:hover{background:color-mix(in srgb, rgba(var(--color-fillSecondary)) 100%, transparent);color:color-mix(in srgb, rgba(var(--color-text)) 100%, transparent)}
+.dp-title-bar{flex:1;min-width:0;font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  color:color-mix(in srgb, rgba(var(--color-text)) 100%, transparent)}
+.dp-body{flex:1;overflow-y:auto;padding:24px 20px 48px}
+.dp-entry-title{font-size:22px;font-weight:700;line-height:1.35;margin-bottom:12px;
+  color:color-mix(in srgb, rgba(var(--color-text)) 100%, transparent);word-break:break-word}
+.dp-meta{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-bottom:20px;font-size:12px;
+  color:color-mix(in srgb, rgba(var(--color-textSecondary)) 100%, transparent)}
+.dp-meta-dot{width:3px;height:3px;border-radius:50%;background:color-mix(in srgb, rgba(var(--color-textTertiary)) 100%, transparent)}
+/* AI Summary card (matches AISummaryCardBase.tsx) */
+.dp-ai{position:relative;overflow:hidden;border-radius:16px;border:1px solid rgb(var(--color-purple) / 0.2);
+  padding:20px;margin-bottom:24px;
+  background:linear-gradient(to bottom, rgb(var(--color-purple) / 0.04), transparent, rgb(var(--color-blue) / 0.02));
+  box-shadow:0 1px 3px rgba(0,0,0,0.04)}
+.dp-ai-header{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.dp-ai-icon{font-size:16px;color:rgb(var(--color-purple))}
+.dp-ai-label{font-weight:500;font-size:13px;
+  background:linear-gradient(to right, rgb(var(--color-purple)), rgb(var(--color-blue)));
+  -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.dp-ai-content{font-size:13px;line-height:1.7;color:color-mix(in srgb, rgba(var(--color-text)) 85%, transparent)}
+.dp-content{font-size:14px;line-height:1.75;color:color-mix(in srgb, rgba(var(--color-text)) 100%, transparent);word-break:break-word}
+.dp-content a{color:hsl(var(--fo-a));text-decoration:underline}
+.dp-link{display:inline-flex;align-items:center;gap:4px;margin-top:16px;padding:8px 14px;border-radius:8px;font-size:12px;font-weight:500;
+  background:hsl(var(--fo-a) / 0.1);color:hsl(var(--fo-a));text-decoration:none;transition:all 0.15s}
+.dp-link:hover{background:hsl(var(--fo-a) / 0.18)}
 </style>
 </head>
 <body>
@@ -1777,12 +1856,25 @@ a{color:inherit;text-decoration:none}
 </aside>
 <div class="overlay" id="overlay"></div>
 <main class="main">
+<div class="main-split">
+<div class="main-entries">
 <div class="header">
 <div class="header-title" id="header-title">全部动态</div>
 <div class="header-sub" id="header-sub"></div>
 </div>
 <div class="tabs" id="tabs"></div>
 <div class="entry-list" id="entry-list"></div>
+</div>
+<div class="detail-panel" id="detail-panel">
+<div class="dp-inner">
+<div class="dp-header">
+<button class="dp-close" id="dp-close" aria-label="关闭"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+<div class="dp-title-bar" id="dp-title-bar"></div>
+</div>
+<div class="dp-body" id="dp-body"></div>
+</div>
+</div>
+</div>
 </main>
 </div>
 <script>
@@ -1887,6 +1979,82 @@ function buildClusters(entryList){
   return{leaders:leaders,memberOf:memberOf};
 }
 
+// ── Entry detail panel state ──
+var selectedEntryId=null;
+var entryById={};
+allEntries.forEach(function(e){entryById[e.id]=e});
+Object.keys(entriesByFeed).forEach(function(fid){
+  (entriesByFeed[fid]||[]).forEach(function(e){entryById[e.id]=e});
+});
+
+// ── Score badge with hover tooltip (matches EntryQualityScoreBadge.tsx) ──
+var DIM_LABELS={information_gain:"信息增益",depth:"深度",evidence:"论据",actionability:"可操作性",originality:"原创性",signal_density:"信号密度"};
+function renderScoreBadge(en){
+  var h='<span class="q-wrap">';
+  h+='<span class="q-score q-'+scoreTier(en.qualityScore)+'">'+en.qualityScore+'</span>';
+  h+='<div class="q-tip">';
+  h+='<div class="q-tip-title">质量分: '+en.qualityScore+'/100</div>';
+  if(en.qualityConfidence!=null){h+='<div class="q-tip-conf">置信度: '+Math.round(en.qualityConfidence*100)+'%</div>'}
+  if(en.qualitySummary){h+='<div class="q-tip-summary">'+esc(en.qualitySummary)+'</div>'}
+  if(en.qualityDimensions){
+    h+='<div class="q-tip-section"><div class="q-tip-label">维度评分</div><div class="q-tip-dims">';
+    var dk=["information_gain","depth","evidence","actionability","originality","signal_density"];
+    dk.forEach(function(k){if(en.qualityDimensions[k]!=null){h+='<span>'+(DIM_LABELS[k]||k)+': '+en.qualityDimensions[k]+'/5</span>'}});
+    h+='</div></div>';
+  }
+  if(en.qualityPositiveReasons&&en.qualityPositiveReasons.length){
+    h+='<div class="q-tip-section"><div class="q-tip-label positive">✓ 优点</div><ul class="q-tip-reasons">';
+    en.qualityPositiveReasons.forEach(function(r){h+='<li>'+esc(r)+'</li>'});
+    h+='</ul></div>';
+  }
+  if(en.qualityNegativeReasons&&en.qualityNegativeReasons.length){
+    h+='<div class="q-tip-section"><div class="q-tip-label negative">✗ 不足</div><ul class="q-tip-reasons">';
+    en.qualityNegativeReasons.forEach(function(r){h+='<li>'+esc(r)+'</li>'});
+    h+='</ul></div>';
+  }
+  h+='</div></span>';
+  return h;
+}
+
+// ── Render detail panel content (matches local app right panel with AI summary) ──
+function renderDetailPanel(entryId){
+  var e=entryById[entryId];if(!e)return;
+  var en=enrichments[entryId]||{};
+  var f=feedMap[e.feedId]||{};
+  document.getElementById("dp-title-bar").textContent=e.title||"详情";
+  var html='';
+  if(e.title){html+='<div class="dp-entry-title">'+esc(e.title)+'</div>'}
+  html+='<div class="dp-meta">';
+  if(f.title){html+='<span>'+esc(f.title)+'</span><span class="dp-meta-dot"></span>'}
+  if(e.author){html+='<span>'+esc(e.author)+'</span><span class="dp-meta-dot"></span>'}
+  html+='<span>'+timeAgo(e.publishedAt)+'</span>';
+  html+='</div>';
+  // AI summary section
+  var summaryText=en.summary?normalizeSummary(en.summary):"";
+  if(summaryText){
+    html+='<div class="dp-ai"><div class="dp-ai-header"><span class="dp-ai-icon">✦</span><span class="dp-ai-label">AI 总结</span></div>';
+    html+='<div class="dp-ai-content">'+esc(summaryText)+'</div></div>';
+  }
+  // Full content
+  var contentText=strip(e.content||e.description||"");
+  if(contentText){html+='<div class="dp-content">'+esc(contentText)+'</div>'}
+  // Link to original
+  if(e.url){html+='<a class="dp-link" href="'+esc(e.url)+'" target="_blank" rel="noopener"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>查看原文</a>'}
+  document.getElementById("dp-body").innerHTML=html;
+}
+
+function openDetail(entryId){
+  selectedEntryId=entryId;
+  renderDetailPanel(entryId);
+  document.getElementById("detail-panel").classList.add("open");
+  document.querySelectorAll(".card").forEach(function(c){c.classList.toggle("selected",c.getAttribute("data-entry-id")===entryId)});
+}
+function closeDetail(){
+  selectedEntryId=null;
+  document.getElementById("detail-panel").classList.remove("open");
+  document.querySelectorAll(".card.selected").forEach(function(c){c.classList.remove("selected")});
+}
+
 // ── Render a single entry card (exact match to list-item-template.tsx) ──
 function renderCard(e,cl){
   var en=enrichments[e.id]||{};
@@ -1897,19 +2065,19 @@ function renderCard(e,cl){
   var rawDesc=strip(e.description||e.content||"").slice(0,280);
   var displayDescription=summary||rawDesc;
 
-  var h='<div class="card unread">';
+  var h='<div class="card unread'+(selectedEntryId===e.id?' selected':'')+'" data-entry-id="'+esc(e.id)+'">';
 
   // Header row: feed icon + feed name + quality score + time
   h+='<div class="card-header">';
   h+='<div class="card-feed-icon"><span>'+esc(feedInitial(feedTitle))+'</span></div>';
   h+='<span class="card-feed-name">'+esc(feedTitle)+'</span>';
-  if(en.qualityScore!=null){h+='<span class="q-score q-'+scoreTier(en.qualityScore)+'">'+en.qualityScore+'</span>'}
+  if(en.qualityScore!=null){h+=renderScoreBadge(en)}
   h+='<span class="card-time">'+timeAgo(e.publishedAt)+'</span>';
   h+='</div>';
 
   // Title: mt-1.5 text-[14px] font-semibold leading-snug text-text
   if(e.title){
-    h+='<a class="card-title" href="'+(e.url||"#")+'" target="_blank" rel="noopener">'+esc(e.title)+'</a>';
+    h+='<span class="card-title">'+esc(e.title)+'</span>';
   }
 
   // Description / Summary: mt-1 text-[12px] leading-relaxed text-text-secondary line-clamp-2
@@ -1987,9 +2155,16 @@ document.addEventListener("click",function(ev){
     document.querySelectorAll(".tab").forEach(function(t){t.className="tab"+(t.getAttribute("data-cat")===activeCat?" active":"")});
     renderTimeline();return;
   }
+  // Card click → open detail panel (skip if clicking tooltip or link)
+  var card=ev.target.closest(".card");
+  if(card&&!ev.target.closest(".q-tip")&&!ev.target.closest("a")){
+    var eid=card.getAttribute("data-entry-id");
+    if(eid){openDetail(eid);return}
+  }
 });
 document.getElementById("mob-toggle").addEventListener("click",function(){document.getElementById("sidebar").classList.toggle("open");document.getElementById("overlay").classList.toggle("open")});
 document.getElementById("overlay").addEventListener("click",function(){document.getElementById("sidebar").classList.remove("open");document.getElementById("overlay").classList.remove("open")});
+document.getElementById("dp-close").addEventListener("click",closeDetail);
 
 // ── Theme (data-theme attribute, matches local app) ──
 var themeKey="finhot-theme";

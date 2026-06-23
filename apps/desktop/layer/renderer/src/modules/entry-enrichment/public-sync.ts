@@ -15,6 +15,11 @@ type EnrichmentPayload = Record<
     tags?: string[]
     qualityScore?: number | null
     qualityTier?: string | null
+    qualityPositiveReasons?: string[]
+    qualityNegativeReasons?: string[]
+    qualityDimensions?: Record<string, number>
+    qualityConfidence?: number
+    qualitySummary?: string
     embedding?: number[]
   }
 >
@@ -52,6 +57,21 @@ function collectEnrichments(): EnrichmentPayload {
       const tier =
         quality.quality_score >= 70 ? "high" : quality.quality_score >= 40 ? "medium" : "low"
       enrichment.qualityTier = tier
+      if (quality.positive_reasons?.length) {
+        enrichment.qualityPositiveReasons = quality.positive_reasons
+      }
+      if (quality.negative_reasons?.length) {
+        enrichment.qualityNegativeReasons = quality.negative_reasons
+      }
+      if (quality.scores) {
+        enrichment.qualityDimensions = quality.scores as unknown as Record<string, number>
+      }
+      if (typeof quality.confidence === "number") {
+        enrichment.qualityConfidence = quality.confidence
+      }
+      if (quality.summary) {
+        enrichment.qualitySummary = quality.summary
+      }
       hasData = true
     }
 
