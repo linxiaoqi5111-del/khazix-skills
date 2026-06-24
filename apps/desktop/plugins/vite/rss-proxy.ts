@@ -46,9 +46,13 @@ interface CachedEntry {
 
 interface CachedEnrichment {
   summary?: string | null
+  /** Why this entry was selected — distinct from content summary */
+  recommendationReason?: string | null
   tags?: string[]
   qualityScore?: number | null
   qualityTier?: string | null
+  /** Selection status: "selected" (≥70), "watch" (40-69), "noise" (<40) */
+  selected?: "selected" | "watch" | "noise" | null
   qualityDetails?: {
     contentTypes?: Record<string, number>
     scores?: Record<string, number>
@@ -63,6 +67,10 @@ interface CachedEnrichment {
     content?: string | null
     readabilityContent?: string | null
   }
+  /** Cluster ID (leader entry id) for multi-source event grouping */
+  clusterId?: string | null
+  /** Related entry IDs in the same event cluster */
+  relatedEntryIds?: string[]
   embedding?: number[]
 }
 
@@ -110,6 +118,91 @@ function readManifest(): FeedCacheManifest {
 
 function writeManifest(manifest: FeedCacheManifest) {
   writeFileSync(join(cacheDir, "manifest.json"), JSON.stringify(manifest, null, 2))
+}
+
+/** Derive selection status from quality score */
+function deriveSelected(en: CachedEnrichment): "selected" | "watch" | "noise" | null {
+  if (en.selected) return en.selected
+  if (en.qualityScore == null) return null
+  if (en.qualityScore >= 70) return "selected"
+  if (en.qualityScore >= 40) return "watch"
+  return "noise"
+}
+
+/** Selection label for display */
+function selectionLabel(sel: string | null, score: number | null): string {
+  if (!sel || score == null) return ""
+  if (sel === "selected") return `精选 ${score}`
+  if (sel === "watch") return `观察 ${score}`
+  return ""
+}
+
+/** Load all cached entries sorted by time */
+function loadAllCachedEntries(): CachedEntry[] {
+  const manifest = readManifest()
+  const allEntries: CachedEntry[] = []
+  for (const feedKey of Object.keys(manifest.feeds)) {
+    const entriesFile = join(cacheDir, "entries", `${feedKey}.json`)
+    if (!existsSync(entriesFile)) continue
+    try {
+      const feedEntries: CachedEntry[] = JSON.parse(readFileSync(entriesFile, "utf-8"))
+      allEntries.push(...feedEntries)
+    } catch { /* skip */ }
+  }
+  allEntries.sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())
+  return allEntries
+}
+
+/** Build RSS 2.0 XML from entries */
+function buildRssXml(
+  title: string,
+  description: string,
+  link: string,
+  entries: CachedEntry[],
+  enrichments: EnrichmentMap,
+  feedMap: Record<string, CachedFeed>,
+): string {
+  const esc = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+
+  let items = ""
+  for (const e of entries.slice(0, 100)) {
+    const en = enrichments[e.id]
+    const feedTitle = feedMap[e.feedId]?.title ?? ""
+    const summary = en?.summary ?? ""
+    const reason = en?.recommendationReason ?? ""
+    const sel = deriveSelected(en ?? {})
+    const scoreLabel = selectionLabel(sel, en?.qualityScore ?? null)
+
+    let desc = ""
+    if (scoreLabel) desc += `【${scoreLabel}】`
+    if (reason) desc += `${reason} `
+    if (summary) desc += summary
+    if (!desc) desc = e.description ?? ""
+    desc = desc.slice(0, 500)
+
+    items += `<item>
+<title>${esc(e.title ?? "")}</title>
+<link>${esc(e.url ?? "")}</link>
+<guid isPermaLink="false">${esc(e.id)}</guid>
+<pubDate>${new Date(e.publishedAt).toUTCString()}</pubDate>
+<description>${esc(desc)}</description>
+<author>${esc(e.author ?? feedTitle)}</author>
+${en?.tags?.length ? en.tags.map((t) => `<category>${esc(t)}</category>`).join("") : ""}
+</item>\n`
+  }
+
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
+<channel>
+<title>${esc(title)}</title>
+<link>${esc(link)}</link>
+<description>${esc(description)}</description>
+<language>zh-CN</language>
+<generator>FinHot</generator>
+<lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
+${items}
+</channel>
+</rss>`
 }
 
 function cacheFeedResult(
@@ -1441,6 +1534,377 @@ export function rssProxyPlugin(): PluginOption {
         }
       })
 
+      // ─── /api/public/items — Enhanced items with enrichment data ───
+      server.middlewares.use("/api/public/items", async (req, res) => {
+        if (handleCors(req, res)) return
+        if (req.method !== "GET") {
+          res.writeHead(405, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: "Method not allowed" }))
+          return
+        }
+        try {
+          const parsedUrl = new URL(req.url ?? "/", "http://localhost")
+          const filter = parsedUrl.searchParams.get("filter") ?? "selected"
+          const since = parsedUrl.searchParams.get("since")
+          const q = parsedUrl.searchParams.get("q")
+          const category = parsedUrl.searchParams.get("category")
+          const limitParam = parsedUrl.searchParams.get("limit")
+          const limit = limitParam ? Math.min(Number.parseInt(limitParam, 10), 500) : 50
+
+          let entries = loadAllCachedEntries()
+          const enrichments = readEnrichments()
+          const manifest = readManifest()
+
+          if (since) {
+            const sinceMs = new Date(since).getTime()
+            entries = entries.filter((e) => new Date(e.publishedAt).getTime() >= sinceMs)
+          }
+
+          if (q) {
+            const lq = q.toLowerCase()
+            entries = entries.filter(
+              (e) =>
+                (e.title ?? "").toLowerCase().includes(lq) ||
+                (enrichments[e.id]?.summary ?? "").toLowerCase().includes(lq) ||
+                (enrichments[e.id]?.tags ?? []).some((t) => t.toLowerCase().includes(lq)),
+            )
+          }
+
+          if (category) {
+            entries = entries.filter((e) => {
+              const feed = manifest.feeds[e.feedId]
+              return feed?.category === category
+            })
+          }
+
+          if (filter === "selected") {
+            entries = entries.filter((e) => deriveSelected(enrichments[e.id] ?? {}) === "selected")
+          } else if (filter === "watch") {
+            entries = entries.filter((e) => {
+              const sel = deriveSelected(enrichments[e.id] ?? {})
+              return sel === "selected" || sel === "watch"
+            })
+          }
+
+          const items = entries.slice(0, limit).map((e) => {
+            const en = enrichments[e.id] ?? {}
+            const feed = manifest.feeds[e.feedId]
+            return {
+              id: e.id,
+              title: e.title,
+              url: e.url,
+              publishedAt: e.publishedAt,
+              author: e.author,
+              feedId: e.feedId,
+              feedTitle: feed?.title ?? null,
+              feedCategory: feed?.category ?? null,
+              summary: en.summary ?? null,
+              recommendationReason: en.recommendationReason ?? null,
+              qualityScore: en.qualityScore ?? null,
+              selected: deriveSelected(en),
+              tags: en.tags ?? [],
+              translation: en.translation ?? null,
+              clusterId: en.clusterId ?? null,
+              relatedEntryIds: en.relatedEntryIds ?? [],
+            }
+          })
+
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=60",
+          })
+          res.end(JSON.stringify({ items, total: items.length, filter }))
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "Unknown error"
+          res.writeHead(500, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: message }))
+        }
+      })
+
+      // ─── /api/public/topics — Event clusters / hot topics ───
+      server.middlewares.use("/api/public/topics", async (req, res) => {
+        if (handleCors(req, res)) return
+        if (req.method !== "GET") {
+          res.writeHead(405, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: "Method not allowed" }))
+          return
+        }
+        try {
+          const allEntries = loadAllCachedEntries()
+          const enrichments = readEnrichments()
+          const manifest = readManifest()
+
+          // Build clusters using embedding similarity
+          const SIM_THRESHOLD = 0.82
+          const TIME_WINDOW_MS = 86400000
+          const items = allEntries
+            .map((e) => {
+              const en = enrichments[e.id]
+              return en?.embedding
+                ? {
+                    id: e.id,
+                    vec: en.embedding,
+                    time: new Date(e.publishedAt).getTime(),
+                    feedId: e.feedId,
+                  }
+                : null
+            })
+            .filter(
+              (x): x is { id: string; vec: number[]; time: number; feedId: string } => x !== null,
+            )
+
+          function cosSim(a: number[], b: number[]): number {
+            if (a.length !== b.length) return 0
+            let dot = 0,
+              na = 0,
+              nb = 0
+            for (let i = 0; i < a.length; i++) {
+              dot += a[i]! * b[i]!
+              na += a[i]! * a[i]!
+              nb += b[i]! * b[i]!
+            }
+            return na && nb ? dot / Math.sqrt(na * nb) : 0
+          }
+
+          const memberOf: Record<string, string> = {}
+          const clusters: { leaderId: string; members: string[] }[] = []
+
+          for (let i = 0; i < items.length; i++) {
+            const item = items[i]!
+            if (memberOf[item.id]) continue
+            const cluster = [item.id]
+            for (let j = i + 1; j < items.length; j++) {
+              const other = items[j]!
+              if (memberOf[other.id]) continue
+              if (Math.abs(item.time - other.time) > TIME_WINDOW_MS) continue
+              if (item.feedId === other.feedId) continue
+              if (cosSim(item.vec, other.vec) >= SIM_THRESHOLD) {
+                cluster.push(other.id)
+                memberOf[other.id] = item.id
+              }
+            }
+            if (cluster.length > 1) {
+              clusters.push({ leaderId: item.id, members: cluster })
+            }
+          }
+
+          // Sort by cluster size (most sources first), then by recency
+          clusters.sort((a, b) => b.members.length - a.members.length)
+
+          const entryMap: Record<string, CachedEntry> = {}
+          for (const e of allEntries) entryMap[e.id] = e
+
+          const topics = clusters.slice(0, 20).map((c) => {
+            const leader = entryMap[c.leaderId]
+            const en = enrichments[c.leaderId] ?? {}
+            const sources = new Set(
+              c.members.map((mid) => manifest.feeds[entryMap[mid]?.feedId ?? ""]?.title).filter(Boolean),
+            )
+            return {
+              id: c.leaderId,
+              title: leader?.title ?? null,
+              sourceCount: sources.size,
+              sources: [...sources],
+              entryCount: c.members.length,
+              entries: c.members,
+              publishedAt: leader?.publishedAt ?? null,
+              summary: en.summary ?? null,
+              qualityScore: en.qualityScore ?? null,
+              selected: deriveSelected(en),
+              tags: en.tags ?? [],
+            }
+          })
+
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=120",
+          })
+          res.end(JSON.stringify({ topics, total: topics.length }))
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "Unknown error"
+          res.writeHead(500, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: message }))
+        }
+      })
+
+      // ─── /api/public/daily — Today's digest (selected + watch, grouped) ───
+      server.middlewares.use("/api/public/daily", async (req, res) => {
+        if (handleCors(req, res)) return
+        if (req.method !== "GET") {
+          res.writeHead(405, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: "Method not allowed" }))
+          return
+        }
+        try {
+          const parsedUrl = new URL(req.url ?? "/", "http://localhost")
+          const dateParam = parsedUrl.searchParams.get("date")
+
+          const targetDate = dateParam ? new Date(dateParam) : new Date()
+          targetDate.setHours(0, 0, 0, 0)
+          const dayStart = targetDate.getTime()
+          const dayEnd = dayStart + 86400000
+
+          const allEntries = loadAllCachedEntries()
+          const enrichments = readEnrichments()
+          const manifest = readManifest()
+
+          const todayEntries = allEntries.filter((e) => {
+            const t = new Date(e.publishedAt).getTime()
+            return t >= dayStart && t < dayEnd
+          })
+
+          const selected = todayEntries.filter(
+            (e) => deriveSelected(enrichments[e.id] ?? {}) === "selected",
+          )
+          const watch = todayEntries.filter(
+            (e) => deriveSelected(enrichments[e.id] ?? {}) === "watch",
+          )
+
+          const mapEntry = (e: CachedEntry) => {
+            const en = enrichments[e.id] ?? {}
+            const feed = manifest.feeds[e.feedId]
+            return {
+              id: e.id,
+              title: e.title,
+              url: e.url,
+              publishedAt: e.publishedAt,
+              feedTitle: feed?.title ?? null,
+              summary: en.summary ?? null,
+              recommendationReason: en.recommendationReason ?? null,
+              qualityScore: en.qualityScore ?? null,
+              selected: deriveSelected(en),
+              tags: en.tags ?? [],
+            }
+          }
+
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=120",
+          })
+          res.end(
+            JSON.stringify({
+              date: targetDate.toISOString().slice(0, 10),
+              totalEntries: todayEntries.length,
+              selected: selected.map(mapEntry),
+              watch: watch.map(mapEntry),
+            }),
+          )
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "Unknown error"
+          res.writeHead(500, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: message }))
+        }
+      })
+
+      // ─── /feed.xml — Selected entries RSS (精选, qualityScore ≥ 70) ───
+      server.middlewares.use("/feed.xml", async (_req, res) => {
+        try {
+          const allEntries = loadAllCachedEntries()
+          const enrichments = readEnrichments()
+          const manifest = readManifest()
+          const feedMap = manifest.feeds
+
+          const selected = allEntries.filter((e) => {
+            const en = enrichments[e.id]
+            if (!en) return false
+            const sel = deriveSelected(en)
+            return sel === "selected"
+          })
+
+          const xml = buildRssXml(
+            "FinHot 精选",
+            "AI 精选金融资讯 — 质量分 ≥ 70",
+            "/feed.xml",
+            selected.slice(0, 100),
+            enrichments,
+            feedMap,
+          )
+          res.writeHead(200, {
+            "Content-Type": "application/rss+xml; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=120",
+          })
+          res.end(xml)
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "Unknown error"
+          res.writeHead(500, { "Content-Type": "text/plain" })
+          res.end(message)
+        }
+      })
+
+      // ─── /feed/all.xml — All entries RSS ───
+      server.middlewares.use("/feed/all.xml", async (_req, res) => {
+        try {
+          const allEntries = loadAllCachedEntries()
+          const enrichments = readEnrichments()
+          const manifest = readManifest()
+          const feedMap = manifest.feeds
+
+          const xml = buildRssXml(
+            "FinHot 全部动态",
+            "所有订阅源的最新内容",
+            "/feed/all.xml",
+            allEntries.slice(0, 200),
+            enrichments,
+            feedMap,
+          )
+          res.writeHead(200, {
+            "Content-Type": "application/rss+xml; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=120",
+          })
+          res.end(xml)
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "Unknown error"
+          res.writeHead(500, { "Content-Type": "text/plain" })
+          res.end(message)
+        }
+      })
+
+      // ─── /feed/daily.xml — Daily digest RSS (today's selected entries) ───
+      server.middlewares.use("/feed/daily.xml", async (_req, res) => {
+        try {
+          const allEntries = loadAllCachedEntries()
+          const enrichments = readEnrichments()
+          const manifest = readManifest()
+          const feedMap = manifest.feeds
+
+          const todayStart = new Date()
+          todayStart.setHours(0, 0, 0, 0)
+          const todayMs = todayStart.getTime()
+
+          const todaySelected = allEntries.filter((e) => {
+            if (new Date(e.publishedAt).getTime() < todayMs) return false
+            const en = enrichments[e.id]
+            if (!en) return false
+            const sel = deriveSelected(en)
+            return sel === "selected" || sel === "watch"
+          })
+
+          const xml = buildRssXml(
+            "FinHot 日报",
+            `${todayStart.toISOString().slice(0, 10)} 精选日报`,
+            "/feed/daily.xml",
+            todaySelected.slice(0, 50),
+            enrichments,
+            feedMap,
+          )
+          res.writeHead(200, {
+            "Content-Type": "application/rss+xml; charset=utf-8",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=300",
+          })
+          res.end(xml)
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "Unknown error"
+          res.writeHead(500, { "Content-Type": "text/plain" })
+          res.end(message)
+        }
+      })
+
       // ─── /api/public/deploy — Build static HTML and deploy to Cloudflare Pages ───
       server.middlewares.use("/api/public/deploy", async (req, res) => {
         if (handleCors(req, res)) return
@@ -1581,7 +2045,7 @@ a{color:inherit;text-decoration:none}.app{display:flex;height:100vh;overflow:hid
 .tabs{display:flex;align-items:center;gap:4px;padding:7px 16px;border-bottom:1px solid rgba(var(--color-fillTertiary));overflow:auto;flex:0 0 auto}.tab{height:28px;padding:0 11px;border-radius:8px;border:1px solid transparent;background:transparent;color:rgba(var(--color-textSecondary));font:inherit;font-size:12px;font-weight:520;cursor:pointer;white-space:nowrap}.tab:hover{background:rgba(var(--color-fillSecondary));color:rgba(var(--color-text))}.tab.active{border-color:hsl(var(--fo-a) / .3);background:hsl(var(--fo-a) / .14);color:hsl(var(--fo-a));font-weight:650}
 .entry-list{flex:1;overflow:auto;padding:6px 8px 28px;scrollbar-width:thin}.card{position:relative;margin:6px 0;padding:11px 14px 11px 16px;border:1px solid hsl(var(--border) / .58);border-left:2px solid hsl(var(--fo-a));border-radius:10px;background:rgba(var(--color-fillQuaternary));transition:background .15s,border-color .15s,box-shadow .15s}.card:hover{background:rgba(var(--color-fillTertiary));border-color:hsl(var(--border));box-shadow:0 3px 14px rgba(0,0,0,.035)}
 .card-head{display:flex;align-items:center;gap:7px}.feed-icon{width:18px;height:18px;border-radius:5px;background:rgba(var(--color-fillSecondary));display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:750;color:rgba(var(--color-textTertiary));overflow:hidden}.feed-icon img{width:100%;height:100%;object-fit:cover}.source{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:rgba(var(--color-textSecondary));font-size:11px;font-weight:650}.time{font-size:11px;color:rgba(var(--color-textTertiary));white-space:nowrap}.q{min-width:28px;border-radius:4px;padding:1px 5px;text-align:center;font-size:11px;font-weight:700;font-variant-numeric:tabular-nums}.q-high{background:rgb(var(--color-green) / .18);color:rgb(var(--color-green));border:1px solid rgb(var(--color-green) / .26)}.q-medium{background:rgb(var(--color-yellow) / .15);color:rgb(var(--color-yellow));border:1px solid rgb(var(--color-yellow) / .22)}.q-low{background:rgb(var(--color-gray) / .14);color:rgba(var(--color-textSecondary));border:1px solid rgb(var(--color-gray) / .14)}.q-wrap{position:relative;display:inline-flex;flex:0 0 auto}.q-wrap:focus{outline:none}.q-wrap:hover .q-detail,.q-wrap:focus-within .q-detail{display:block}.q-detail{display:none;position:absolute;right:0;top:calc(100% + 8px);z-index:30;width:320px;max-width:min(320px,calc(100vw - 24px));padding:10px;border:1px solid hsl(var(--border));border-radius:12px;background:hsl(var(--background));box-shadow:0 10px 28px rgba(0,0,0,.12);color:rgba(var(--color-text));font-size:11px;font-weight:400;line-height:1.45}.q-detail-title{font-size:12px;font-weight:720;margin-bottom:4px}.q-detail-muted{color:rgba(var(--color-textTertiary))}.q-grid{display:grid;grid-template-columns:1fr 1fr;gap:2px 10px;margin-top:6px}.q-types{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px}.q-reasons{margin-top:6px;padding-left:14px}
-.card.open{border-color:hsl(var(--fo-a) / .36);background:hsl(var(--fo-a) / .035)}.card-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:6px;font-size:14px;font-weight:680;line-height:1.36;color:rgba(var(--color-text));word-break:break-word}.card-title:hover{color:hsl(var(--fo-a))}button.card-title{width:100%;border:0;background:transparent;text-align:left;font:inherit;cursor:pointer}.desc{margin-top:4px;font-size:12px;line-height:1.58;color:rgba(var(--color-textSecondary));display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}.card-foot{display:flex;align-items:center;gap:6px;margin-top:7px}.tags{display:flex;flex-wrap:wrap;gap:4px;min-width:0;flex:1}.tag{border-radius:4px;background:rgba(var(--color-fillSecondary));color:rgba(var(--color-textSecondary));font-size:10px;padding:2px 6px}.cluster{border:0;border-radius:4px;background:rgb(var(--color-blue) / .1);color:rgb(var(--color-blue));font:inherit;font-size:11px;padding:2px 6px;cursor:pointer}.cluster.on{background:hsl(var(--fo-a) / .15);color:hsl(var(--fo-a))}.member{margin-left:24px;opacity:.9}.ai-panel{margin-top:10px;border-radius:12px;border:1px solid hsl(var(--fo-a) / .18);background:linear-gradient(135deg,hsl(var(--fo-a) / .07),transparent 52%),rgba(var(--color-fillQuaternary));box-shadow:0 8px 24px rgba(0,0,0,.045);overflow:hidden}.ai-card{padding:12px}.ai-head{display:flex;align-items:center;justify-content:space-between;gap:8px;color:hsl(var(--fo-a));font-size:12px;font-weight:720}.ai-title{display:flex;align-items:center;gap:6px}.ai-dot{width:8px;height:8px;border-radius:999px;background:hsl(var(--fo-a));box-shadow:0 0 0 4px hsl(var(--fo-a) / .12)}.ai-body{margin-top:9px;color:rgba(var(--color-text));font-size:13px;line-height:1.62;white-space:pre-wrap;word-break:break-word}.ai-section{border-top:1px solid hsl(var(--border) / .62);padding:12px}.ai-section-title{font-size:12px;font-weight:720;color:rgba(var(--color-textSecondary));margin-bottom:7px}.ai-link{display:inline-flex;align-items:center;gap:5px;margin-top:10px;color:hsl(var(--fo-a));font-size:12px;font-weight:650}.translation-title{font-size:13px;font-weight:680;color:rgba(var(--color-text));margin-bottom:6px}
+.card.open{border-color:hsl(var(--fo-a) / .36);background:hsl(var(--fo-a) / .035)}.card-title{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;margin-top:6px;font-size:14px;font-weight:680;line-height:1.36;color:rgba(var(--color-text));word-break:break-word}.card-title:hover{color:hsl(var(--fo-a))}.rec-reason{margin-top:4px;font-size:12px;line-height:1.5;color:hsl(var(--fo-a));font-weight:560;padding:3px 8px;border-radius:6px;background:hsl(var(--fo-a) / .06);border:1px solid hsl(var(--fo-a) / .12)}button.card-title{width:100%;border:0;background:transparent;text-align:left;font:inherit;cursor:pointer}.desc{margin-top:4px;font-size:12px;line-height:1.58;color:rgba(var(--color-textSecondary));display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;word-break:break-word}.card-foot{display:flex;align-items:center;gap:6px;margin-top:7px}.tags{display:flex;flex-wrap:wrap;gap:4px;min-width:0;flex:1}.tag{border-radius:4px;background:rgba(var(--color-fillSecondary));color:rgba(var(--color-textSecondary));font-size:10px;padding:2px 6px}.cluster{border:0;border-radius:4px;background:rgb(var(--color-blue) / .1);color:rgb(var(--color-blue));font:inherit;font-size:11px;padding:2px 6px;cursor:pointer}.cluster.on{background:hsl(var(--fo-a) / .15);color:hsl(var(--fo-a))}.member{margin-left:24px;opacity:.9}.ai-panel{margin-top:10px;border-radius:12px;border:1px solid hsl(var(--fo-a) / .18);background:linear-gradient(135deg,hsl(var(--fo-a) / .07),transparent 52%),rgba(var(--color-fillQuaternary));box-shadow:0 8px 24px rgba(0,0,0,.045);overflow:hidden}.ai-card{padding:12px}.ai-head{display:flex;align-items:center;justify-content:space-between;gap:8px;color:hsl(var(--fo-a));font-size:12px;font-weight:720}.ai-title{display:flex;align-items:center;gap:6px}.ai-dot{width:8px;height:8px;border-radius:999px;background:hsl(var(--fo-a));box-shadow:0 0 0 4px hsl(var(--fo-a) / .12)}.ai-body{margin-top:9px;color:rgba(var(--color-text));font-size:13px;line-height:1.62;white-space:pre-wrap;word-break:break-word}.ai-section{border-top:1px solid hsl(var(--border) / .62);padding:12px}.ai-section-title{font-size:12px;font-weight:720;color:rgba(var(--color-textSecondary));margin-bottom:7px}.ai-link{display:inline-flex;align-items:center;gap:5px;margin-top:10px;color:hsl(var(--fo-a));font-size:12px;font-weight:650}.translation-title{font-size:13px;font-weight:680;color:rgba(var(--color-text));margin-bottom:6px}
 .radar-wrap{display:flex;flex-direction:column;gap:8px;padding:4px 4px 26px}.radar-card{overflow:hidden;border:1px solid hsl(var(--fo-a) / .16);border-radius:12px;background:linear-gradient(135deg,hsl(var(--fo-a) / .035),transparent 46%),rgba(var(--color-fillQuaternary));box-shadow:0 4px 16px hsl(var(--fo-a) / .04),0 2px 8px rgba(0,0,0,.045)}.radar-main{width:100%;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer;display:flex;align-items:flex-start;gap:10px;padding:12px}.radar-main:hover{background:rgba(var(--color-fillQuaternary))}.radar-title-row{display:flex;align-items:flex-start;gap:8px}.radar-title{flex:1;min-width:0;font-size:14px;font-weight:680;line-height:1.35}.heat{display:inline-flex;align-items:center;gap:4px;font-size:11px;font-weight:700;color:hsl(var(--fo-a));white-space:nowrap}.heat-dot{width:7px;height:7px;border-radius:999px;background:hsl(var(--fo-a));box-shadow:0 0 0 3px hsl(var(--fo-a) / .12)}.chips{display:flex;flex-wrap:wrap;gap:4px;margin-top:7px}.chip{border-radius:6px;background:rgba(var(--color-fillTertiary));color:rgba(var(--color-textSecondary));font-size:11px;padding:2px 6px}.meta{display:flex;gap:12px;margin-top:7px;color:rgba(var(--color-textTertiary));font-size:11px}.radar-chevron{width:16px;color:rgba(var(--color-textTertiary));transition:transform .15s}.radar-card.open .radar-chevron{transform:rotate(180deg)}.radar-entries{display:none;border-top:1px solid hsl(var(--fo-a) / .13);padding:7px 10px 10px}.radar-card.open .radar-entries{display:block}.radar-entry{display:flex;align-items:center;gap:8px;border-radius:8px;padding:6px 6px;color:rgba(var(--color-textSecondary));font-size:12px}.radar-entry:hover{background:rgba(var(--color-fillQuaternary));color:rgba(var(--color-text))}.radar-entry-title{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .empty{height:300px;display:flex;flex-direction:column;gap:8px;align-items:center;justify-content:center;color:rgba(var(--color-textTertiary));font-size:13px}.empty svg{width:38px;height:38px;opacity:.38}
 .mobile-toggle{display:none;position:fixed;left:12px;top:10px;z-index:60;width:34px;height:34px;border:0;border-radius:8px;background:hsl(var(--background));color:rgba(var(--color-text));box-shadow:0 1px 7px rgba(0,0,0,.12)}
@@ -1629,7 +2093,7 @@ var allEntries=${allEntriesJson};
 var enrichments=${enrichmentsJson};
 var feedMap={};feeds.forEach(function(f){feedMap[f.id]=f});
 var selectedFeedId=null;
-var activeView="smart-today";
+var activeView="smart-selected";
 var activeCat="all";
 var expandedGroups={};
 var expandedClusters={};
@@ -1644,6 +2108,9 @@ function shortTime(t){var d=new Date(t);var hh=String(d.getHours()).padStart(2,"
 function initial(s){s=String(s||"?");var c=s.charAt(0);return /[\\u4e00-\\u9fff]/.test(c)?c:c.toUpperCase()}
 function scoreVal(en){if(!en)return null;var v=en.qualityScore;if(v==null)v=en.quality_score;v=Number(v);return isFinite(v)?Math.round(v):null}
 function scoreTier(v){return v>=70?"high":v>=40?"medium":"low"}
+function selStatus(en){var s=en&&en.selected;if(s)return s;var v=scoreVal(en);if(v==null)return null;return v>=70?"selected":v>=40?"watch":"noise"}
+function selLabel(en){var st=selStatus(en);var v=scoreVal(en);if(!st||v==null)return"";if(st==="selected")return"\u7CBE\u9009 "+v;if(st==="watch")return"\u89C2\u5BDF "+v;return""}
+function recReason(en){return en&&(en.recommendationReason||en.recommendation_reason)||"";}
 function qualityDetailHtml(en){
   var d=en&&(en.qualityDetails||en.quality_details);if(!d)return"";
   var scores=d.scores||{};
@@ -1675,8 +2142,10 @@ function renderEntryInsight(e,en,f){
   var translatedBody=translationText(en);
   var hasAny=summary||hasTranslation(en);
   var h='<div class="ai-panel">';
-  h+='<div class="ai-card"><div class="ai-head"><span class="ai-title"><span class="ai-dot"></span>AI 总结</span>';
-  var score=scoreVal(en);if(score!=null)h+='<span class="q q-'+scoreTier(score)+'">'+score+'</span>';
+  var reason=recReason(en);
+  if(reason){h+='<div class="ai-card"><div class="ai-head"><span class="ai-title"><span class="ai-dot"></span>\u7CBE\u9009\u7406\u7531</span></div><div class="ai-body">'+textHtml(reason)+'</div></div>';}
+  h+='<div class="ai-card"><div class="ai-head"><span class="ai-title"><span class="ai-dot"></span>AI \u603B\u7ED3</span>';
+  var score=scoreVal(en);var sl2=selLabel(en);if(sl2)h+='<span class="q q-'+scoreTier(score||0)+'">'+esc(sl2)+'</span>';else if(score!=null)h+='<span class="q q-'+scoreTier(score)+'">'+score+'</span>';
   h+='</div><div class="ai-body">'+(summary?textHtml(summary):'暂无 AI 总结')+'</div>';
   if(e.url)h+='<a class="ai-link" href="'+esc(e.url)+'" target="_blank" rel="noopener">打开原文 ↗</a>';
   h+='</div>';
@@ -1696,15 +2165,19 @@ function countForFeed(id){return (entriesByFeed[id]||[]).length}
 function icon(name){var icons={today:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 2v4M16 2v4M3 10h18"/><rect x="3" y="4" width="18" height="18" rx="2"/></svg>',unread:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h6"/></svg>',star:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m12 2 3.1 6.3 6.9 1-5 4.9 1.2 6.8-6.2-3.3L5.8 21 7 14.2 2 9.3l6.9-1z"/></svg>',radar:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20a8 8 0 1 0-8-8"/><path d="M12 16a4 4 0 1 0-4-4"/><path d="M12 12 4 20"/></svg>'};return icons[name]||""}
 
 var radarTopics=buildRadarTopics();
-if(!allEntries.some(isToday))activeView="smart-unread";
+var hasSelected=allEntries.some(function(e){return selStatus(enrichments[e.id])==="selected"});
+if(hasSelected)activeView="smart-selected";
+else if(allEntries.some(isToday))activeView="smart-today";
+else activeView="smart-unread";
 
 function renderSmartNav(){
   var todayCount=allEntries.filter(isToday).length;
+  var selectedCount=allEntries.filter(function(e){return selStatus(enrichments[e.id])==="selected"}).length;
   var items=[
-    {id:"smart-today",label:"今天",count:todayCount,ico:"today"},
-    {id:"smart-unread",label:"全部未读",count:allEntries.length,ico:"unread"},
-    {id:"smart-favorites",label:"收藏",count:0,ico:"star"},
-    {id:"smart-radar",label:"热点雷达",count:radarTopics.length,ico:"radar"}
+    {id:"smart-selected",label:"\u7CBE\u9009",count:selectedCount,ico:"star"},
+    {id:"smart-today",label:"\u4ECA\u5929",count:todayCount,ico:"today"},
+    {id:"smart-unread",label:"\u5168\u90E8",count:allEntries.length,ico:"unread"},
+    {id:"smart-radar",label:"\u4ECA\u65E5\u70ED\u70B9 TOP",count:radarTopics.length,ico:"radar"}
   ];
   document.getElementById("smart-nav").innerHTML=items.map(function(it){
     return '<button class="nav-item '+(activeView===it.id?"active":"")+'" data-view="'+it.id+'"><span class="nav-ico">'+icon(it.ico)+'</span><span class="feed-name">'+it.label+'</span><span class="count">'+it.count+'</span></button>';
@@ -1737,8 +2210,8 @@ function renderTabs(){
 function selectedEntries(){
   var list=[];
   if(selectedFeedId)list=(entriesByFeed[selectedFeedId]||[]).slice();
+  else if(activeView==="smart-selected")list=allEntries.filter(function(e){return selStatus(enrichments[e.id])==="selected"});
   else if(activeView==="smart-today")list=allEntries.filter(isToday);
-  else if(activeView==="smart-favorites")list=[];
   else list=allEntries.slice();
   return list.filter(visibleByCat).sort(function(a,b){return new Date(b.publishedAt).getTime()-new Date(a.publishedAt).getTime()});
 }
@@ -1754,7 +2227,7 @@ function empty(msg,sub){document.getElementById("entry-list").innerHTML='<div cl
 
 function renderTimeline(){
   var entries=selectedEntries();
-  var title=selectedFeedId?(feedMap[selectedFeedId]&&feedMap[selectedFeedId].title||"动态"):(activeView==="smart-today"?"今天":activeView==="smart-favorites"?"收藏":"全部未读");
+  var title=selectedFeedId?(feedMap[selectedFeedId]&&feedMap[selectedFeedId].title||"\u52A8\u6001"):(activeView==="smart-selected"?"\u7CBE\u9009":activeView==="smart-today"?"\u4ECA\u5929":"\u5168\u90E8");
   header(title,entries.length+" 未读"+(selectedFeedId?"":" · "+feeds.length+" 个信源"));
   if(!entries.length){empty("暂无内容",activeView==="smart-today"?"今天当前筛选下没有内容":"");return}
   var cl=buildClusters(entries);
@@ -1772,9 +2245,10 @@ function renderCard(e,cl){
   var desc=plain(en.summary)||strip(e.description||e.content||"").replace(/\\s+/g," ").trim().slice(0,280);
   var tags=Array.isArray(en.tags)?en.tags.slice(0,4):[];
   var h='<article class="card '+(isOpen?"open":"")+'" data-entry-card="'+esc(e.id)+'"><div class="card-head"><span class="feed-icon">'+(f.image?'<img src="'+esc(f.image)+'" alt="">':esc(initial(f.title||f.url)))+'</span><span class="source">'+esc(f.title||f.url||"")+'</span>';
-  if(score!=null)h+='<span class="q-wrap" tabindex="0"><span class="q q-'+scoreTier(score)+'">'+score+'</span>'+qualityDetailHtml(en)+'</span>';
+  var sl=selLabel(en);if(sl)h+='<span class="q-wrap" tabindex="0"><span class="q q-'+scoreTier(score||0)+'">'+esc(sl)+'</span>'+qualityDetailHtml(en)+'</span>';else if(score!=null)h+='<span class="q-wrap" tabindex="0"><span class="q q-'+scoreTier(score)+'">'+score+'</span>'+qualityDetailHtml(en)+'</span>';
   h+='<span class="time">'+when(e.publishedAt)+'</span></div>';
   h+='<button class="card-title" data-open-entry="'+esc(e.id)+'">'+esc(e.title||"(无标题)")+'</button>';
+  var reason=recReason(en);if(reason)h+='<div class="rec-reason">'+esc(reason)+'</div>';
   if(desc)h+='<div class="desc">'+esc(desc)+'</div>';
   var foot="";
   if(tags.length)foot+='<div class="tags">'+tags.map(function(t){return '<span class="tag">'+esc(typeof t==="object"?(t.label||t.name||""):t)+'</span>'}).join("")+'</div>';
@@ -1819,16 +2293,21 @@ function makeTopic(id,ids){
 function renderRadar(){
   var topics=radarTopics;
   if(activeCat!=="all")topics=topics.filter(function(t){return t.entryIds.some(function(id){var e=allEntries.find(function(x){return x.id===id});return e&&visibleByCat(e)})});
-  header("热点雷达",topics.length+" 个话题 · "+allEntries.length+" 条内容");
-  if(!topics.length){empty("暂无热点话题","需要更多订阅内容和 AI 嵌入后才能聚合");return}
+  var selCount=topics.filter(function(t){return t.avgQualityScore!=null&&t.avgQualityScore>=70}).length;
+  header("\u4ECA\u65E5\u70ED\u70B9 TOP",selCount+" \u7CBE\u9009 · "+topics.length+" \u4E2A\u8BDD\u9898 · \u591A\u4FE1\u6E90\u805A\u5408");
+  if(!topics.length){empty("\u6682\u65E0\u70ED\u70B9\u8BDD\u9898","\u9700\u8981\u66F4\u591A\u8BA2\u9605\u5185\u5BB9\u548C AI \u5D4C\u5165\u540E\u624D\u80FD\u805A\u5408");return}
   document.getElementById("entry-list").innerHTML='<div class="radar-wrap">'+topics.map(renderTopic).join("")+'</div>';
 }
 function renderTopic(t){
   var open=expandedTopicId===t.id;
-  var h='<section class="radar-card '+(open?"open":"")+'"><button class="radar-main" data-topic="'+esc(t.id)+'"><div style="min-width:0;flex:1"><div class="radar-title-row"><span class="radar-title">'+esc(t.title)+'</span><span class="heat"><span class="heat-dot"></span>'+t.sourceCount+'源</span></div>';
+  var topicSel=t.avgQualityScore!=null&&t.avgQualityScore>=70?"\u7CBE\u9009":t.avgQualityScore!=null&&t.avgQualityScore>=40?"\u89C2\u5BDF":"";
+  var h='<section class="radar-card '+(open?"open":"")+'"><button class="radar-main" data-topic="'+esc(t.id)+'">';
+  h+='<div style="min-width:0;flex:1"><div class="radar-title-row"><span class="radar-title">'+esc(t.title)+'</span>';
+  if(topicSel)h+='<span class="q q-'+(t.avgQualityScore>=70?"high":"medium")+'">'+topicSel+" "+t.avgQualityScore+'</span>';
+  h+='<span class="heat"><span class="heat-dot"></span>\u540C\u4E00\u4E8B\u4EF6 \u00B7 '+t.sourceCount+' \u5BB6\u62A5\u9053</span></div>';
   h+='<div class="chips">'+t.sourceNames.slice(0,5).map(function(n){return '<span class="chip">'+esc(n.length>9?n.slice(0,9)+"...":n)+'</span>'}).join("")+(t.sourceNames.length>5?'<span class="chip">+'+(t.sourceNames.length-5)+'</span>':"")+'</div>';
-  h+='<div class="meta"><span>'+shortTime(t.earliestAt)+' -> '+shortTime(t.latestAt)+'</span><span>'+t.size+'条</span>'+(t.avgQualityScore!=null?'<span>质量 '+t.avgQualityScore+'</span>':"")+'</div></div><svg class="radar-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></button>';
-  h+='<div class="radar-entries">'+t.entryIds.slice(0,8).map(function(id){var e=allEntries.find(function(x){return x.id===id});if(!e)return"";return '<a class="radar-entry" href="'+esc(e.url||"#")+'" target="_blank" rel="noopener"><span class="radar-entry-title">'+esc(e.title||"(无标题)")+'</span><span class="time">'+when(e.publishedAt)+'</span></a>'}).join("")+'</div></section>';
+  h+='<div class="meta"><span>'+shortTime(t.earliestAt)+' \u2192 '+shortTime(t.latestAt)+'</span><span>'+t.size+'\u6761</span></div></div><svg class="radar-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m6 9 6 6 6-6"/></svg></button>';
+  h+='<div class="radar-entries">'+t.entryIds.slice(0,8).map(function(id){var e=allEntries.find(function(x){return x.id===id});if(!e)return"";var ren=enrichments[e.id]||{};var rsl=selLabel(ren);var f=feedMap[e.feedId]||{};return '<a class="radar-entry" href="'+esc(e.url||"#")+'" target="_blank" rel="noopener"><span class="feed-dot" style="font-size:9px">'+esc(initial(f.title||f.url))+'</span><span class="radar-entry-title">'+esc(e.title||"(\u65E0\u6807\u9898)")+'</span>'+(rsl?'<span class="q q-'+((scoreVal(ren)||0)>=70?"high":"medium")+'" style="font-size:10px">'+esc(rsl)+'</span>':"")+'<span class="time">'+when(e.publishedAt)+'</span></a>'}).join("")+'</div></section>';
   return h;
 }
 
