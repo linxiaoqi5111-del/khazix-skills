@@ -2862,7 +2862,8 @@ function showFullDetail(entryId){
   var tr=en.translation||{};var translatedBody=translationText(en);
   var score=scoreVal(en);var sl=selLabel(en);
   var bodyText=stripNL(e.content||e.description||"").replace(/[ \\t\\r]+/g," ").trim();
-  var titleText=String(e.title||"(\u65E0\u6807\u9898)").trim();
+  var titleText=strip(e.title||"").replace(/\\s+/g," ").trim();
+  if(!titleText){var _src=f.title||"";var _auth=e.author||"";if(_auth&&_src&&_auth!==_src&&_src.indexOf(_auth)===-1){titleText=_src+" \u00B7 "+_auth}else{titleText=_src||_auth||"(\u65E0\u6807\u9898)"}}
   var pd=new Date(e.publishedAt);
   var dateStr=isFinite(pd.getTime())?(pd.getFullYear()+"\u5E74"+(pd.getMonth()+1)+"\u6708"+pd.getDate()+"\u65E5 "+String(pd.getHours()).padStart(2,"0")+":"+String(pd.getMinutes()).padStart(2,"0")):"";
   var h='<button class="fp-back" id="fp-back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>\u8FD4\u56DE</button>';
@@ -3015,10 +3016,9 @@ function renderCard(e,cl){
   var rawDesc=strip(e.description||e.content||"").replace(/\\s+/g," ").trim();
   var titlePlain=strip(e.title||"").replace(/\\s+/g," ").trim();
   var aiSum=plain(en.summary||"").trim();
-  var aiTitle=genAiTitle(aiSum);
   var displayTitle;
-  if(aiTitle){displayTitle=aiTitle}else{var src=f.title||"";var auth=e.author||"";if(auth&&src&&auth!==src&&src.indexOf(auth)===-1){displayTitle=src+" \u00B7 "+auth}else{displayTitle=src||auth||titlePlain||genTitle(rawDesc)}}
-  var desc=rawDesc.slice(0,160);
+  if(titlePlain){displayTitle=titlePlain}else{var src=f.title||"";var auth=e.author||"";if(auth&&src&&auth!==src&&src.indexOf(auth)===-1){displayTitle=src+" \u00B7 "+auth}else{displayTitle=src||auth||genTitle(rawDesc)}}
+  var desc=aiSum||rawDesc.slice(0,160);
   var reason=recReason(en)||plain(en.summary||"").slice(0,120);
   var tags=Array.isArray(en.tags)?en.tags.slice(0,4):[];
   var h='<article class="card '+(isOpen?"open":"")+'" data-entry-card="'+esc(e.id)+'"><div class="card-head"><span class="feed-icon">'+(f.image?'<img src="'+esc(f.image)+'" alt="">':esc(initial(f.title||f.url)))+'</span><span class="source">'+esc(f.title||f.url||"")+'</span>';
@@ -3566,10 +3566,9 @@ function renderCard(e,cl){
   var rawDescFull=strip(e.description||e.content||"").slice(0,200);
   var titlePlain=strip(e.title||"").replace(/\\s+/g," ").trim();
   var aiSumSV=normalizeSummary(en.summary||"").trim();
-  var aiTitleSV=genAiTitle(aiSumSV);
   var displayTitle;
-  if(aiTitleSV){displayTitle=aiTitleSV}else{var srcSV=feedTitle||"";var authSV=e.author||"";if(authSV&&srcSV&&authSV!==srcSV&&srcSV.indexOf(authSV)===-1){displayTitle=srcSV+" \u00B7 "+authSV}else{displayTitle=srcSV||authSV||titlePlain||genTitle(rawDescFull)}}
-  var desc=rawDescFull.slice(0,160);
+  if(titlePlain){displayTitle=titlePlain}else{var srcSV=feedTitle||"";var authSV=e.author||"";if(authSV&&srcSV&&authSV!==srcSV&&srcSV.indexOf(authSV)===-1){displayTitle=srcSV+" \u00B7 "+authSV}else{displayTitle=srcSV||authSV||genTitle(rawDescFull)}}
+  var desc=aiSumSV||rawDescFull.slice(0,160);
   var reason=en.recommendationReason||en.recommendation_reason||(en.summary?normalizeSummary(en.summary).slice(0,120):"");
 
   var h='<div class="card unread" data-entry-card="'+esc(e.id)+'">';
@@ -3663,7 +3662,8 @@ function showFullDetail(entryId){
   var hasTransl=!!translatedBody||!!(tr.title||tr.description);
   var score=en.qualityScore;
   var bodyText=stripNL(e.content||e.description||"").replace(/[ \\t\\r]+/g," ").trim();
-  var titleText=String(e.title||"(\u65E0\u6807\u9898)").trim();
+  var titleText=strip(e.title||"").replace(/\\s+/g," ").trim();
+  if(!titleText){var _src2=feedTitle||"";var _auth2=e.author||"";if(_auth2&&_src2&&_auth2!==_src2&&_src2.indexOf(_auth2)===-1){titleText=_src2+" \u00B7 "+_auth2}else{titleText=_src2||_auth2||"(\u65E0\u6807\u9898)"}}
   var pd=new Date(e.publishedAt);
   var dateStr=isFinite(pd.getTime())?(pd.getFullYear()+"\u5E74"+(pd.getMonth()+1)+"\u6708"+pd.getDate()+"\u65E5 "+String(pd.getHours()).padStart(2,"0")+":"+String(pd.getMinutes()).padStart(2,"0")):"";
   var h='<button class="fp-back" id="fp-back"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 12H5M12 19l-7-7 7-7"/></svg>\u8FD4\u56DE</button>';
