@@ -41,6 +41,10 @@ apps/desktop/resources/cli
 .codex/
 .agents/settings.local.json
 
+# FinHot local scrape/runtime artifacts
+/app/
+/data/
+
 # IDE logs
 .cursor/debug-*.log
 
