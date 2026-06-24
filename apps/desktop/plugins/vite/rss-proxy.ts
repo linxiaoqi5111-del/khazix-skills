@@ -19,6 +19,54 @@ const RSS_FETCH_TIMEOUT_MS = 30_000
 const RSS_ENTRY_LIMIT = 30
 const JINA_READER_BASE = "https://r.jina.ai/"
 const DEFUDDLE_BASE = "https://defuddle.md/"
+const PUBLIC_SITE_BASE =
+  process.env.FINHOT_PUBLIC_BASE_URL || process.env.VITE_PUBLIC_API_BASE || ""
+const TOPIC_RECENT_WINDOW_MS = 3 * 24 * 60 * 60 * 1000
+const TOPIC_CLUSTER_TIME_WINDOW_MS = 18 * 60 * 60 * 1000
+const TOPIC_SIMILARITY_THRESHOLD = 0.78
+
+const DETAIL_ALLOWED_TAGS = new Set([
+  "a",
+  "blockquote",
+  "br",
+  "code",
+  "del",
+  "div",
+  "em",
+  "figcaption",
+  "figure",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "hr",
+  "i",
+  "img",
+  "li",
+  "ol",
+  "p",
+  "pre",
+  "span",
+  "strong",
+  "table",
+  "tbody",
+  "td",
+  "th",
+  "thead",
+  "tr",
+  "u",
+  "ul",
+])
+const DETAIL_VOID_TAGS = new Set(["br", "hr", "img"])
+const DETAIL_GLOBAL_ATTRS = new Set(["title"])
+const DETAIL_TAG_ATTRS: Record<string, Set<string>> = {
+  a: new Set(["href", "title"]),
+  img: new Set(["src", "alt", "title", "width", "height", "loading"]),
+  td: new Set(["colspan", "rowspan"]),
+  th: new Set(["colspan", "rowspan"]),
+}
 
 // ─── Public feed cache (server-side persistence for visitor mode) ───
 
@@ -120,6 +168,121 @@ function writeManifest(manifest: FeedCacheManifest) {
   writeFileSync(join(cacheDir, "manifest.json"), JSON.stringify(manifest, null, 2))
 }
 
+function escapeXml(value: string | null | undefined): string {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+}
+
+function publicUrl(path: string, base = PUBLIC_SITE_BASE): string {
+  if (!base) return path
+  try {
+    return new URL(path, base).toString()
+  } catch {
+    return path
+  }
+}
+
+function publicRequestBase(req: { headers?: Record<string, string | string[] | undefined> }) {
+  if (PUBLIC_SITE_BASE) return PUBLIC_SITE_BASE
+  const host = req.headers?.host
+  const proto = req.headers?.["x-forwarded-proto"] ?? "http"
+  const firstHost = Array.isArray(host) ? host[0] : host
+  const firstProto = Array.isArray(proto) ? proto[0] : proto
+  return firstHost ? `${firstProto}://${firstHost}` : ""
+}
+
+function stripUrlControlCharacters(value: string): string {
+  let output = ""
+  for (const char of value.trim()) {
+    const code = char.codePointAt(0) ?? 0
+    if (code > 0x20 && code !== 0x7f) output += char
+  }
+  return output
+}
+
+function isSafeDetailUrl(value: string, attr: string): boolean {
+  const normalized = stripUrlControlCharacters(value)
+  if (!normalized) return false
+  if (normalized.startsWith("/") && !normalized.startsWith("//")) return true
+  try {
+    const url = new URL(normalized)
+    if (url.protocol === "http:" || url.protocol === "https:") return true
+    return attr === "href" && url.protocol === "mailto:"
+  } catch {
+    return false
+  }
+}
+
+/* eslint-disable regexp/match-any, regexp/no-super-linear-backtracking, regexp/use-ignore-case -- The detail page sanitizer works on bounded RSS entry fragments and intentionally uses small tag-level regex passes before allowlist filtering. */
+function sanitizeDetailHtml(value: string): string {
+  const withoutDangerousBlocks = value
+    .replaceAll(/<!--[\S\s]*?-->/g, "")
+    .replaceAll(/<!doctype[\S\s]*?>/gi, "")
+    .replaceAll(
+      /<\s*(script|style|iframe|object|embed|form|input|button|textarea|select|svg|math)[^>]*>[\S\s]*?<\s*\/\s*\1\s*>/gi,
+      "",
+    )
+    .replaceAll(
+      /<\s*\/?\s*(script|style|iframe|object|embed|form|input|button|textarea|select|svg|math)[^>]*>/gi,
+      "",
+    )
+
+  return withoutDangerousBlocks.replaceAll(
+    /<\/?([a-zA-Z][\w:-]*)([^>]*)>/g,
+    (rawTag, rawName: string, rawAttrs: string) => {
+      const tag = rawName.toLowerCase()
+      if (!DETAIL_ALLOWED_TAGS.has(tag)) return ""
+      if (rawTag.startsWith("</")) return DETAIL_VOID_TAGS.has(tag) ? "" : `</${tag}>`
+
+      const allowedAttrs = new Set([
+        ...DETAIL_GLOBAL_ATTRS,
+        ...(DETAIL_TAG_ATTRS[tag] ? [...DETAIL_TAG_ATTRS[tag]] : []),
+      ])
+      const attrs: string[] = []
+      const attrRegex = /\s+([a-zA-Z_:][\w:.-]*)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+)))?/g
+      for (const match of rawAttrs.matchAll(attrRegex)) {
+        const attrName = match[1]!.toLowerCase()
+        if (attrName.startsWith("on") || !allowedAttrs.has(attrName)) continue
+        const attrValue = match[2] ?? match[3] ?? match[4] ?? ""
+        if ((attrName === "href" || attrName === "src") && !isSafeDetailUrl(attrValue, attrName)) {
+          continue
+        }
+        if (
+          (attrName === "width" ||
+            attrName === "height" ||
+            attrName === "colspan" ||
+            attrName === "rowspan") &&
+          !/^\d{1,4}$/.test(attrValue)
+        ) {
+          continue
+        }
+        attrs.push(`${attrName}="${escapeXml(attrValue)}"`)
+      }
+
+      if (tag === "a") {
+        attrs.push('target="_blank"', 'rel="noopener noreferrer"')
+      }
+      if (tag === "img" && !attrs.some((attr) => attr.startsWith("loading="))) {
+        attrs.push('loading="lazy"')
+      }
+
+      return `<${tag}${attrs.length > 0 ? ` ${attrs.join(" ")}` : ""}>`
+    },
+  )
+}
+/* eslint-enable regexp/match-any, regexp/no-super-linear-backtracking, regexp/use-ignore-case */
+
+function stripHtmlToText(value: string | null | undefined): string {
+  return String(value ?? "")
+    .replaceAll(/<[^>]+>/g, " ")
+    .replaceAll(/[`*_#>\-[\]()]/g, " ")
+    .replaceAll(/\s+/g, " ")
+    .trim()
+}
+
 /** Derive selection status from quality score */
 function deriveSelected(en: CachedEnrichment): "selected" | "watch" | "noise" | null {
   if (en.selected) return en.selected
@@ -135,6 +298,25 @@ function selectionLabel(sel: string | null, score: number | null): string {
   if (sel === "selected") return `精选 ${score}`
   if (sel === "watch") return `观察 ${score}`
   return ""
+}
+
+function scoreValue(en: CachedEnrichment | undefined): number | null {
+  const value = Number(en?.qualityScore)
+  return Number.isFinite(value) ? Math.round(value) : null
+}
+
+function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length) return 0
+  let dot = 0
+  let normA = 0
+  let normB = 0
+  for (const [i, av] of a.entries()) {
+    const bv = b[i]!
+    dot += av * bv
+    normA += av * av
+    normB += bv * bv
+  }
+  return normA && normB ? dot / Math.sqrt(normA * normB) : 0
 }
 
 /** Load all cached entries sorted by time */
@@ -155,6 +337,139 @@ function loadAllCachedEntries(): CachedEntry[] {
   return allEntries
 }
 
+function buildClusterLeaders(entries: CachedEntry[], enrichments: EnrichmentMap) {
+  const items = entries
+    .map((entry) => {
+      const embedding = enrichments[entry.id]?.embedding
+      return embedding && embedding.length > 0
+        ? {
+            id: entry.id,
+            vec: embedding,
+            time: new Date(entry.publishedAt).getTime(),
+            feedId: entry.feedId,
+          }
+        : null
+    })
+    .filter(
+      (item): item is { id: string; vec: number[]; time: number; feedId: string } =>
+        item !== null && Number.isFinite(item.time),
+    )
+
+  const memberOf: Record<string, string> = {}
+  const leaders: Record<string, string[]> = {}
+
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i]!
+    if (memberOf[item.id]) continue
+    const ids = [item.id]
+    for (let j = i + 1; j < items.length; j++) {
+      const other = items[j]!
+      if (memberOf[other.id]) continue
+      if (item.feedId === other.feedId) continue
+      if (Math.abs(item.time - other.time) > TOPIC_CLUSTER_TIME_WINDOW_MS) continue
+      if (cosineSimilarity(item.vec, other.vec) >= TOPIC_SIMILARITY_THRESHOLD) {
+        ids.push(other.id)
+        memberOf[other.id] = item.id
+      }
+    }
+    if (ids.length > 1) leaders[item.id] = ids
+  }
+
+  return leaders
+}
+
+function buildPublicTopics(
+  allEntries: CachedEntry[],
+  enrichments: EnrichmentMap,
+  feedMap: Record<string, CachedFeed>,
+  limit = 20,
+) {
+  const cutoff = Date.now() - TOPIC_RECENT_WINDOW_MS
+  const recentEntries = allEntries.filter(
+    (entry) => new Date(entry.publishedAt).getTime() >= cutoff,
+  )
+  const entryMap = new Map(recentEntries.map((entry) => [entry.id, entry]))
+  let leaders = buildClusterLeaders(recentEntries, enrichments)
+
+  if (Object.keys(leaders).length === 0) {
+    const buckets: Record<string, string[]> = {}
+    for (const entry of recentEntries) {
+      const tags = enrichments[entry.id]?.tags ?? []
+      const firstTag = tags[0]
+      const key = firstTag || stripHtmlToText(entry.title).slice(0, 12)
+      if (!key) continue
+      buckets[key] ??= []
+      buckets[key]!.push(entry.id)
+    }
+    leaders = Object.fromEntries(Object.entries(buckets).filter(([, ids]) => ids.length > 1))
+  }
+
+  return Object.entries(leaders)
+    .map(([id, ids]) => {
+      const entries = ids
+        .map((entryId) => entryMap.get(entryId))
+        .filter((entry): entry is CachedEntry => !!entry)
+      if (entries.length < 2) return null
+
+      const sourceIds = [...new Set(entries.map((entry) => entry.feedId))]
+      const times = entries
+        .map((entry) => new Date(entry.publishedAt).getTime())
+        .filter(Number.isFinite)
+      const scores = entries
+        .map((entry) => scoreValue(enrichments[entry.id]))
+        .filter((score): score is number => score !== null)
+      const leader =
+        entries
+          .slice()
+          .sort(
+            (a, b) => (scoreValue(enrichments[b.id]) ?? 0) - (scoreValue(enrichments[a.id]) ?? 0),
+          )[0] ?? entries[0]!
+      const latestAt =
+        times.length > 0 ? Math.max(...times) : new Date(leader.publishedAt).getTime()
+      const earliestAt = times.length > 0 ? Math.min(...times) : latestAt
+      const avgQualityScore =
+        scores.length > 0
+          ? Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length)
+          : null
+      const sourceCount = sourceIds.length
+      const heat =
+        Math.pow(sourceCount, 1.5) *
+        (Date.now() - latestAt > 86_400_000
+          ? 0.25
+          : Date.now() - latestAt > 43_200_000
+            ? 0.5
+            : Date.now() - latestAt > 3_600_000
+              ? 0.75
+              : 1) *
+        Math.log2(entries.length + 1)
+
+      return {
+        id,
+        leaderId: leader.id,
+        title: leader.title ?? "(无标题)",
+        sourceCount,
+        sources: sourceIds.map(
+          (feedId) => feedMap[feedId]?.title || feedMap[feedId]?.url || feedId,
+        ),
+        entryCount: entries.length,
+        entries: entries.map((entry) => entry.id),
+        entryIds: entries.map((entry) => entry.id),
+        earliestAt: new Date(earliestAt).toISOString(),
+        latestAt: new Date(latestAt).toISOString(),
+        publishedAt: new Date(latestAt).toISOString(),
+        avgQualityScore,
+        qualityScore: avgQualityScore,
+        selected: deriveSelected({ qualityScore: avgQualityScore }),
+        summary: enrichments[leader.id]?.summary ?? null,
+        tags: enrichments[leader.id]?.tags ?? [],
+        heat,
+      }
+    })
+    .filter((topic): topic is NonNullable<typeof topic> => !!topic)
+    .sort((a, b) => b.heat - a.heat)
+    .slice(0, limit)
+}
+
 /** Build RSS 2.0 XML from entries */
 function buildRssXml(
   title: string,
@@ -163,14 +478,8 @@ function buildRssXml(
   entries: CachedEntry[],
   enrichments: EnrichmentMap,
   feedMap: Record<string, CachedFeed>,
+  siteBase = PUBLIC_SITE_BASE,
 ): string {
-  const esc = (s: string) =>
-    s
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-
   let items = ""
   for (const e of entries.slice(0, 100)) {
     const en = enrichments[e.id]
@@ -179,6 +488,8 @@ function buildRssXml(
     const reason = en?.recommendationReason ?? ""
     const sel = deriveSelected(en ?? {})
     const scoreLabel = selectionLabel(sel, en?.qualityScore ?? null)
+    const itemUrl = publicUrl(`/items/${encodeURIComponent(e.id)}`, siteBase)
+    const sourceUrl = e.url && isSafeDetailUrl(e.url, "href") ? e.url : ""
 
     let desc = ""
     if (scoreLabel) desc += `【${scoreLabel}】`
@@ -188,22 +499,23 @@ function buildRssXml(
     desc = desc.slice(0, 500)
 
     items += `<item>
-<title>${esc(e.title ?? "")}</title>
-<link>${esc(e.url ?? "")}</link>
-<guid isPermaLink="false">${esc(e.id)}</guid>
+<title>${escapeXml(e.title ?? "")}</title>
+<link>${escapeXml(itemUrl)}</link>
+<guid isPermaLink="true">${escapeXml(itemUrl)}</guid>
 <pubDate>${new Date(e.publishedAt).toUTCString()}</pubDate>
-<description>${esc(desc)}</description>
-<author>${esc(e.author ?? feedTitle)}</author>
-${en?.tags?.length ? en.tags.map((t) => `<category>${esc(t)}</category>`).join("") : ""}
+<description>${escapeXml(desc)}</description>
+<author>${escapeXml(e.author ?? feedTitle)}</author>
+${sourceUrl ? `<source url="${escapeXml(sourceUrl)}">${escapeXml(feedTitle)}</source>` : ""}
+${en?.tags?.length ? en.tags.map((t) => `<category>${escapeXml(t)}</category>`).join("") : ""}
 </item>\n`
   }
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
 <channel>
-<title>${esc(title)}</title>
-<link>${esc(link)}</link>
-<description>${esc(description)}</description>
+<title>${escapeXml(title)}</title>
+<link>${escapeXml(publicUrl(link, siteBase))}</link>
+<description>${escapeXml(description)}</description>
 <language>zh-CN</language>
 <generator>FinHot</generator>
 <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
@@ -1641,89 +1953,7 @@ export function rssProxyPlugin(): PluginOption {
           const allEntries = loadAllCachedEntries()
           const enrichments = readEnrichments()
           const manifest = readManifest()
-
-          // Build clusters using embedding similarity
-          const SIM_THRESHOLD = 0.82
-          const TIME_WINDOW_MS = 86400000
-          const items = allEntries
-            .map((e) => {
-              const en = enrichments[e.id]
-              return en?.embedding
-                ? {
-                    id: e.id,
-                    vec: en.embedding,
-                    time: new Date(e.publishedAt).getTime(),
-                    feedId: e.feedId,
-                  }
-                : null
-            })
-            .filter(
-              (x): x is { id: string; vec: number[]; time: number; feedId: string } => x !== null,
-            )
-
-          function cosSim(a: number[], b: number[]): number {
-            if (a.length !== b.length) return 0
-            let dot = 0,
-              na = 0,
-              nb = 0
-            for (const [i, element] of a.entries()) {
-              dot += element! * b[i]!
-              na += element! * element!
-              nb += b[i]! * b[i]!
-            }
-            return na && nb ? dot / Math.sqrt(na * nb) : 0
-          }
-
-          const memberOf: Record<string, string> = {}
-          const clusters: { leaderId: string; members: string[] }[] = []
-
-          for (let i = 0; i < items.length; i++) {
-            const item = items[i]!
-            if (memberOf[item.id]) continue
-            const cluster = [item.id]
-            for (let j = i + 1; j < items.length; j++) {
-              const other = items[j]!
-              if (memberOf[other.id]) continue
-              if (Math.abs(item.time - other.time) > TIME_WINDOW_MS) continue
-              if (item.feedId === other.feedId) continue
-              if (cosSim(item.vec, other.vec) >= SIM_THRESHOLD) {
-                cluster.push(other.id)
-                memberOf[other.id] = item.id
-              }
-            }
-            if (cluster.length > 1) {
-              clusters.push({ leaderId: item.id, members: cluster })
-            }
-          }
-
-          // Sort by cluster size (most sources first), then by recency
-          clusters.sort((a, b) => b.members.length - a.members.length)
-
-          const entryMap: Record<string, CachedEntry> = {}
-          for (const e of allEntries) entryMap[e.id] = e
-
-          const topics = clusters.slice(0, 20).map((c) => {
-            const leader = entryMap[c.leaderId]
-            const en = enrichments[c.leaderId] ?? {}
-            const sources = new Set(
-              c.members
-                .map((mid) => manifest.feeds[entryMap[mid]?.feedId ?? ""]?.title)
-                .filter(Boolean),
-            )
-            return {
-              id: c.leaderId,
-              title: leader?.title ?? null,
-              sourceCount: sources.size,
-              sources: [...sources],
-              entryCount: c.members.length,
-              entries: c.members,
-              publishedAt: leader?.publishedAt ?? null,
-              summary: en.summary ?? null,
-              qualityScore: en.qualityScore ?? null,
-              selected: deriveSelected(en),
-              tags: en.tags ?? [],
-            }
-          })
+          const topics = buildPublicTopics(allEntries, enrichments, manifest.feeds, 20)
 
           res.writeHead(200, {
             "Content-Type": "application/json",
@@ -1809,7 +2039,7 @@ export function rssProxyPlugin(): PluginOption {
       })
 
       // ─── /feed.xml — Selected entries RSS (精选, qualityScore ≥ 70) ───
-      server.middlewares.use("/feed.xml", async (_req, res) => {
+      server.middlewares.use("/feed.xml", async (req, res) => {
         try {
           const allEntries = loadAllCachedEntries()
           const enrichments = readEnrichments()
@@ -1830,6 +2060,7 @@ export function rssProxyPlugin(): PluginOption {
             selected.slice(0, 100),
             enrichments,
             feedMap,
+            publicRequestBase(req),
           )
           res.writeHead(200, {
             "Content-Type": "application/rss+xml; charset=utf-8",
@@ -1845,7 +2076,7 @@ export function rssProxyPlugin(): PluginOption {
       })
 
       // ─── /feed/all.xml — All entries RSS ───
-      server.middlewares.use("/feed/all.xml", async (_req, res) => {
+      server.middlewares.use("/feed/all.xml", async (req, res) => {
         try {
           const allEntries = loadAllCachedEntries()
           const enrichments = readEnrichments()
@@ -1859,6 +2090,7 @@ export function rssProxyPlugin(): PluginOption {
             allEntries.slice(0, 200),
             enrichments,
             feedMap,
+            publicRequestBase(req),
           )
           res.writeHead(200, {
             "Content-Type": "application/rss+xml; charset=utf-8",
@@ -1874,7 +2106,7 @@ export function rssProxyPlugin(): PluginOption {
       })
 
       // ─── /feed/daily.xml — Daily digest RSS (today's selected entries) ───
-      server.middlewares.use("/feed/daily.xml", async (_req, res) => {
+      server.middlewares.use("/feed/daily.xml", async (req, res) => {
         try {
           const allEntries = loadAllCachedEntries()
           const enrichments = readEnrichments()
@@ -1900,6 +2132,7 @@ export function rssProxyPlugin(): PluginOption {
             todaySelected.slice(0, 50),
             enrichments,
             feedMap,
+            publicRequestBase(req),
           )
           res.writeHead(200, {
             "Content-Type": "application/rss+xml; charset=utf-8",
@@ -2033,6 +2266,8 @@ export function rssProxyPlugin(): PluginOption {
           res.writeHead(200, {
             "Content-Type": "text/html; charset=utf-8",
             "Cache-Control": "public, max-age=120",
+            "Content-Security-Policy":
+              "default-src 'self'; img-src 'self' https: data:; style-src 'unsafe-inline'; script-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
           })
           res.end(html)
         } catch (error: unknown) {
@@ -2188,12 +2423,14 @@ function buildItemDetailHtml(
   ]
 
   const pubDate = entry.publishedAt ? new Date(entry.publishedAt).toLocaleString("zh-CN") : ""
+  const contentHtml = sanitizeDetailHtml(entry.content || entry.description || "")
 
   return `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' https: data:; style-src 'unsafe-inline'; script-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
 <title>${esc(entry.title ?? "FinHot Detail")}</title>
 <meta name="description" content="${esc(summary || (entry.description ?? "").slice(0, 160))}">
 <style>
@@ -2295,11 +2532,7 @@ ${
         .join("")}</div></div>`
     : ""
 }
-${
-  entry.content || entry.description
-    ? `<div class="section"><div class="section-title">正文内容</div><div class="content-body">${entry.content || entry.description || ""}</div></div>`
-    : ""
-}
+${contentHtml ? `<div class="section"><div class="section-title">正文内容</div><div class="content-body">${contentHtml}</div></div>` : ""}
 ${entry.url ? `<a class="cta" href="${esc(entry.url)}" target="_blank" rel="noopener">阅读原文 &rarr;</a>` : ""}
 ${
   related.length > 0
@@ -2614,7 +2847,7 @@ function empty(msg,sub){document.getElementById("entry-list").innerHTML='<div cl
 function renderTimeline(){
   var entries=selectedEntries();
   var title=selectedFeedId?(feedMap[selectedFeedId]&&feedMap[selectedFeedId].title||"\u52A8\u6001"):(activeView==="smart-selected"?"\u7CBE\u9009":activeView==="smart-today"?"\u4ECA\u5929":"\u5168\u90E8");
-  header(title,entries.length+" 未读"+(selectedFeedId?"":" · "+feeds.length+" 个信源"));
+  header(title,entries.length+" 条内容"+(selectedFeedId?"":" · "+feeds.length+" 个信源"));
   if(!entries.length){empty("暂无内容",activeView==="smart-today"?"今天当前筛选下没有内容":"");return}
   var cl=buildClusters(entries);
   var html="";

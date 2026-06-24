@@ -33,13 +33,15 @@ All AI processing happens locally. Public endpoints only render pre-computed res
 | `/feed/all.xml`   | All entries              | Full firehose                  |
 | `/feed/daily.xml` | Today's digest           | Daily briefing                 |
 
+RSS item links point to FinHot detail permalinks (`/items/<id>`). The original article URL is kept as the RSS `<source>` URL and on the detail page.
+
 ### JSON API
 
 All API endpoints return JSON with `Access-Control-Allow-Origin: *`.
 
 #### `GET /api/public/items`
 
-Paginated item list with enrichment data.
+Filtered item list with enrichment data.
 
 **Parameters:**
 | Param | Default | Description |
@@ -112,7 +114,7 @@ Single item full detail including content body, qualityDetails, and related entr
 
 #### `GET /api/public/topics`
 
-Hot topic clusters (multi-source event aggregation).
+Hot topic clusters (multi-source event aggregation). The endpoint uses the same public radar defaults as the UI: recent 3-day entries, 18-hour clustering window, and embedding cosine similarity threshold `0.78`, with tag/title fallback when embeddings are unavailable.
 
 **Response:**
 
@@ -123,9 +125,18 @@ Hot topic clusters (multi-source event aggregation).
       "id": "cluster-xxx",
       "title": "Representative headline",
       "entries": ["id1", "id2", "id3"],
+      "entryIds": ["id1", "id2", "id3"],
       "sourceCount": 3,
+      "sources": ["Source A", "Source B"],
+      "entryCount": 3,
       "avgQualityScore": 78,
-      "latestAt": "..."
+      "qualityScore": 78,
+      "selected": "selected",
+      "earliestAt": "...",
+      "latestAt": "...",
+      "publishedAt": "...",
+      "summary": "...",
+      "tags": ["macro"]
     }
   ]
 }
@@ -177,12 +188,12 @@ These are intentionally separate fields. An agent should use `recommendationReas
 
 ## Data Sources
 
-| Source    | Method                          | Config                                                 |
-| --------- | ------------------------------- | ------------------------------------------------------ |
-| Weibo     | RSSHub `/weibo/user/{uid}`      | Docker localhost:1200                                  |
-| Xueqiu    | Playwright headful Chrome       | Cookie injection, profile at `~/.finhot/xq-pw-profile` |
-| Twitter/X | RSSHub `/twitter/user/{handle}` | `TWITTER_AUTH_TOKEN` in Docker env                     |
-| WeChat    | wechat2rss proxy                | License-bound, separate machine                        |
+| Source    | Method                                                   | Config                                            |
+| --------- | -------------------------------------------------------- | ------------------------------------------------- |
+| Weibo     | RSSHub `/weibo/user/{uid}`                               | Docker localhost:1200                             |
+| Xueqiu    | Built-in `finhot://xueqiu/{uid}` scraper or RSSHub route | Playwright/Chrome and Xueqiu cookie when required |
+| Twitter/X | RSSHub `/twitter/user/{handle}`                          | `TWITTER_AUTH_TOKEN` in Docker env                |
+| WeChat    | wechat2rss proxy                                         | License-bound local or remote service             |
 
 ## Cache Structure
 
