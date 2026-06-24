@@ -1356,7 +1356,7 @@ export function rssProxyPlugin(): PluginOption {
             ? "雪球"
             : /weibo/i.test(url)
               ? "微博"
-              : /mp\.weixin/i.test(url)
+              : /mp\.weixin/i.test(url) || /:8090/.test(url)
                 ? "公众号"
                 : null
           cacheFeedResult(result.feed, result.entries, feedCategory)
@@ -2859,6 +2859,7 @@ function renderTabs(){
 function selectedEntries(){
   var list=[];
   if(selectedFeedId)list=(entriesByFeed[selectedFeedId]||[]).slice();
+  else if(activeCat!=="all")list=allEntries.slice();
   else if(activeView==="smart-selected")list=allEntries.filter(function(e){return selStatus(enrichments[e.id])==="selected"});
   else if(activeView==="smart-today")list=allEntries.filter(isToday);
   else list=allEntries.slice();
