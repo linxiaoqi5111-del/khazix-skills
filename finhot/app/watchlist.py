@@ -219,6 +219,11 @@ def _wechat2rss_map():
 
 
 def fetch_wechat_account(name):
+    # dict entry: {"name": "公众号名", "url": "http://localhost:8090/feed/xxx.xml"}
+    if isinstance(name, dict):
+        url = name.get("url", "")
+        display = name.get("name", url.rsplit("/", 1)[-1])
+        return fetch_rss(url, f"公众号@{display}")
     if name.startswith("http"):
         return fetch_rss(name, f"公众号@{name.rsplit('/', 1)[-1]}")
     url = _wechat2rss_map().get(name)
@@ -300,7 +305,8 @@ def fetch_watchlist():
         try:
             items.extend(fetch_wechat_account(name))
         except Exception as e:  # noqa: BLE001
-            errors[f"wechat:{name}"] = str(e)
+            key = name.get("name", name.get("url", "")) if isinstance(name, dict) else name
+            errors[f"wechat:{key}"] = str(e)
     for user in wl["x"]:
         try:
             items.extend(fetch_x_user(user))
