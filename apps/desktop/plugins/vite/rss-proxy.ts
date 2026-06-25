@@ -1474,6 +1474,9 @@ export function rssProxyPlugin(): PluginOption {
       //  - 微信: 21:30 and 08:30 only.
       // New Grok X posts must be fetched by the agent (written to
       // x_grok_entries.json); the scheduler only re-imports whatever seed exists.
+      // After each scheduled refresh the freshly cached content is published to
+      // Cloudflare Pages (finhot.industry7view.com) when CF_API_TOKEN /
+      // CF_ACCOUNT_ID are set in the environment.
       let lastScheduleStamp = ""
       setInterval(() => {
         const { hour, minute, stamp } = beijingTimeParts(new Date())
@@ -1488,6 +1491,7 @@ export function rssProxyPlugin(): PluginOption {
           } catch {
             /* skip */
           }
+          await autoDeployIfConfigured()
         })()
       }, SCHEDULE_TICK_MS)
 
@@ -2883,6 +2887,86 @@ export function rssProxyPlugin(): PluginOption {
         }
       })
 
+      // Build the static reader HTML from the local cache and deploy it to
+      // Cloudflare Pages (project `finhot` → finhot.industry7view.com).
+      // Shared by the manual /api/public/deploy endpoint and the scheduler's
+      // auto-deploy step. Returns the deployed preview URL.
+      async function deployPublicSite(cfApiToken: string, cfAccountId: string): Promise<string> {
+        const manifest = readManifest()
+        const feeds = Object.values(manifest.feeds).sort(
+          (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
+        )
+        const entriesByFeed: Record<string, CachedEntry[]> = {}
+        for (const feed of feeds) {
+          const entriesFile = join(cacheDir, "entries", `${feed.id}.json`)
+          if (existsSync(entriesFile)) {
+            try {
+              entriesByFeed[feed.id] = JSON.parse(readFileSync(entriesFile, "utf-8"))
+            } catch {
+              /* skip */
+            }
+          }
+        }
+        const allEntries = Object.values(entriesByFeed)
+          .flat()
+          .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())
+          .slice(0, 500)
+
+        const enrichments = readEnrichments()
+        // Strip embeddings from enrichments to reduce page size
+        const enrichmentsForPage: Record<string, any> = {}
+        for (const [id, en] of Object.entries(enrichments)) {
+          const { embedding, ...rest } = en as any
+          enrichmentsForPage[id] = rest
+          if (embedding) enrichmentsForPage[id].embedding = embedding
+        }
+        const html = buildPublicPageHtmlLocalStyle(
+          JSON.stringify(feeds),
+          JSON.stringify(entriesByFeed),
+          JSON.stringify(allEntries),
+          JSON.stringify(enrichmentsForPage),
+        )
+
+        // Deploy to Cloudflare Pages via wrangler CLI
+        const { execSync } = await import("node:child_process")
+        const tmpDir = join(cacheDir, "_pages_deploy")
+        if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true })
+        writeFileSync(join(tmpDir, "index.html"), html, "utf-8")
+
+        const wranglerResult = execSync(
+          `npx wrangler pages deploy "${tmpDir}" --project-name finhot --branch main --commit-dirty=true`,
+          {
+            env: {
+              ...process.env,
+              CLOUDFLARE_API_TOKEN: cfApiToken,
+              CLOUDFLARE_ACCOUNT_ID: cfAccountId,
+            },
+            timeout: 120_000,
+            encoding: "utf-8",
+          },
+        )
+        const urlMatch = wranglerResult.match(/https:\/\/[a-z0-9]+\.finhot\.pages\.dev/)
+        return urlMatch?.[0] ?? "https://finhot.industry7view.com"
+      }
+
+      // Auto-deploy to Cloudflare Pages after a scheduled refresh, when CF
+      // credentials are present in the environment. No-op (returns false)
+      // when credentials are missing, so the scheduler stays self-contained.
+      async function autoDeployIfConfigured(): Promise<boolean> {
+        const cfApiToken = process.env.CF_API_TOKEN
+        const cfAccountId = process.env.CF_ACCOUNT_ID
+        if (!cfApiToken || !cfAccountId) return false
+        try {
+          const url = await deployPublicSite(cfApiToken, cfAccountId)
+          console.info(`[FinHot] Auto-deployed public site → ${url}`)
+          return true
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "Unknown error"
+          console.warn(`[FinHot] Auto-deploy failed: ${message}`)
+          return false
+        }
+      }
+
       // ─── /api/public/deploy — Build static HTML and deploy to Cloudflare Pages ───
       server.middlewares.use("/api/public/deploy", async (req, res) => {
         if (handleCors(req, res)) return
@@ -2899,75 +2983,21 @@ export function rssProxyPlugin(): PluginOption {
             })
             req.on("end", () => resolve(data))
           })
-          const { cfApiToken, cfAccountId } = JSON.parse(body || "{}")
+          const parsed = JSON.parse(body || "{}")
+          const cfApiToken = parsed.cfApiToken || process.env.CF_API_TOKEN
+          const cfAccountId = parsed.cfAccountId || process.env.CF_ACCOUNT_ID
           if (!cfApiToken || !cfAccountId) {
             res.writeHead(400, { "Content-Type": "application/json" })
             res.end(JSON.stringify({ error: "cfApiToken and cfAccountId required" }))
             return
           }
 
-          // Build HTML from cache
-          const manifest = readManifest()
-          const feeds = Object.values(manifest.feeds).sort(
-            (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-          )
-          const entriesByFeed: Record<string, CachedEntry[]> = {}
-          for (const feed of feeds) {
-            const entriesFile = join(cacheDir, "entries", `${feed.id}.json`)
-            if (existsSync(entriesFile)) {
-              try {
-                entriesByFeed[feed.id] = JSON.parse(readFileSync(entriesFile, "utf-8"))
-              } catch {
-                /* skip */
-              }
-            }
-          }
-          const allEntries = Object.values(entriesByFeed)
-            .flat()
-            .sort((a, b) => new Date(b.publishedAt).getTime() - new Date(a.publishedAt).getTime())
-            .slice(0, 500)
-
-          const enrichments = readEnrichments()
-          // Strip embeddings from enrichments to reduce page size
-          const enrichmentsForPage: Record<string, any> = {}
-          for (const [id, en] of Object.entries(enrichments)) {
-            const { embedding, ...rest } = en as any
-            enrichmentsForPage[id] = rest
-            if (embedding) enrichmentsForPage[id].embedding = embedding
-          }
-          const html = buildPublicPageHtmlLocalStyle(
-            JSON.stringify(feeds),
-            JSON.stringify(entriesByFeed),
-            JSON.stringify(allEntries),
-            JSON.stringify(enrichmentsForPage),
-          )
-
-          // Deploy to Cloudflare Pages via wrangler CLI
-          const { execSync } = await import("node:child_process")
-          const tmpDir = join(cacheDir, "_pages_deploy")
-          if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true })
-          writeFileSync(join(tmpDir, "index.html"), html, "utf-8")
-
-          const wranglerResult = execSync(
-            `npx wrangler pages deploy "${tmpDir}" --project-name finhot --branch main --commit-dirty=true`,
-            {
-              env: {
-                ...process.env,
-                CLOUDFLARE_API_TOKEN: cfApiToken,
-                CLOUDFLARE_ACCOUNT_ID: cfAccountId,
-              },
-              timeout: 120_000,
-              encoding: "utf-8",
-            },
-          )
-          const urlMatch = wranglerResult.match(/https:\/\/[a-z0-9]+\.finhot\.pages\.dev/)
+          const url = await deployPublicSite(cfApiToken, cfAccountId)
           res.writeHead(200, {
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
           })
-          res.end(
-            JSON.stringify({ ok: true, url: urlMatch?.[0] ?? "https://finhot.industry7view.com" }),
-          )
+          res.end(JSON.stringify({ ok: true, url }))
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : "Unknown error"
           res.writeHead(500, { "Content-Type": "application/json" })
