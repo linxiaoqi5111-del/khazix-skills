@@ -32,6 +32,14 @@ const TOPIC_RECENT_WINDOW_MS = 3 * 24 * 60 * 60 * 1000
 const TOPIC_CLUSTER_TIME_WINDOW_MS = 18 * 60 * 60 * 1000
 const TOPIC_SIMILARITY_THRESHOLD = 0.78
 
+// AI enrichment（质量打分 + summary + recommendationReason）只处理近期条目。
+// 配合：
+// - collector 层的 admitted（四因子廉价准入）
+// - Focal 新订阅只拉前 5 条
+// 避免对海量历史旧条目做昂贵 LLM 调用。旧条目不打分就进不了非 WeChat 的 public score gate。
+const ENRICH_RECENCY_DAYS = 3
+const ENRICH_PER_FEED_LIMIT = 5 // 每 feed 最多处理最近 N 条需要 AI 的，对齐 Focal 新订阅只摘前 5 条 + 时效控制
+
 const DETAIL_ALLOWED_TAGS = new Set([
   "a",
   "blockquote",
@@ -529,6 +537,14 @@ interface EnrichResult {
  * result into enrichments.json. Without an LLM key (FINHOT_AI_API_KEY) this is
  * a no-op, so the scheduler can call it unconditionally. Producing qualityScore
  * is what lets non-WeChat platforms (微博/雪球/X) pass the public score gate.
+ *
+ * 候选筛选逻辑（关键优化）：
+ * - 时间窗口：默认只处理最近 ENRICH_RECENCY_DAYS=3 天（金融消息时效性）。
+ * - 每 feed 最多最近 ENRICH_PER_FEED_LIMIT=5 条需要 AI 的（直接对齐 Focal 新订阅只摘前 5 条）。
+ * - 必须缺 summary 或 qualityScore 或完整 6 维度 scores 才进入 LLM。
+ * - 配合 collector admitted 准入，进一步控制量。
+ * - 老条目不打分就自然被 public score gate 挡住（非 WeChat）。
+ * - 手动 batch 可传 maxAgeDays 覆盖。
  */
 async function enrichMissingEntries(
   opts: {
@@ -537,6 +553,7 @@ async function enrichMissingEntries(
     apiKey?: string
     baseURL?: string
     model?: string
+    maxAgeDays?: number
   } = {},
 ): Promise<EnrichResult> {
   const apiKey = opts.apiKey || process.env.FINHOT_AI_API_KEY || ""
@@ -547,12 +564,39 @@ async function enrichMissingEntries(
 
   const manifest = readManifest()
   const enrichments = readEnrichments()
+
+  const maxAgeDays = opts.maxAgeDays ?? ENRICH_RECENCY_DAYS
+  const maxAgeMs = maxAgeDays * 24 * 60 * 60 * 1000
+  const now = Date.now()
+
   let candidates = loadAllCachedEntries().filter((e) => {
+    const published = new Date(e.publishedAt ?? 0).getTime()
+    if (now - published > maxAgeMs) return false
+
     const en = enrichments[e.id]
     // Re-enrich entries that are missing a summary/score OR that lack the
     // canonical 6-dimension breakdown (e.g. legacy ad-hoc enrichments).
+    // 仅近期 + 缺关键字段：避免历史旧条目反复消耗 LLM。
     return !en?.summary || en?.qualityScore == null || !en?.qualityDetails?.scores
   })
+
+  // 每 feed 只取最近的 5 条需要 AI 的（对齐 Focal 新订阅只摘前 5 条规则）。
+  // 即使老 feed 积累了很多历史，也只处理其最新 5 条候选。
+  // 再叠加时间窗口（金融消息时效性强，3 天足够），双重控制 LLM 量。
+  const PER_FEED_AI_LIMIT = ENRICH_PER_FEED_LIMIT
+  const byFeed: Record<string, typeof candidates> = {}
+  for (const e of candidates) {
+    const fid = e.feedId || "unknown"
+    ;(byFeed[fid] ||= []).push(e)
+  }
+  candidates = []
+  for (const list of Object.values(byFeed)) {
+    list.sort(
+      (a, b) => new Date(b.publishedAt ?? 0).getTime() - new Date(a.publishedAt ?? 0).getTime(),
+    )
+    candidates.push(...list.slice(0, PER_FEED_AI_LIMIT))
+  }
+
   if (opts.platform) {
     candidates = candidates.filter(
       (e) =>
@@ -2490,7 +2534,10 @@ export function rssProxyPlugin(): PluginOption {
         }
       })
 
-      // ─── /api/public/batch-enrich — Server-side AI summary generation for entries missing enrichments ───
+      // ─── /api/public/batch-enrich — Server-side AI summary/quality scoring (only recent candidates) ───
+      // 默认：最近 3 天 + 每 feed 最多最近 5 条（ENRICH_RECENCY_DAYS + ENRICH_PER_FEED_LIMIT）。
+      // 金融消息时效性强，严格对齐 Focal 新订阅只摘前 5 条。显著降低 LLM 调用。
+      // 传 maxAgeDays 可覆盖。配合 collector admitted。
       server.middlewares.use("/api/public/batch-enrich", async (req, res) => {
         if (handleCors(req, res)) return
         if (req.method !== "POST") {
@@ -2512,6 +2559,7 @@ export function rssProxyPlugin(): PluginOption {
             model: bodyModel,
             limit: batchLimit,
             platform: targetPlatform,
+            maxAgeDays: bodyMaxAgeDays,
           } = JSON.parse(body || "{}")
 
           const apiKey = bodyKey || process.env.FINHOT_AI_API_KEY || ""
@@ -2535,6 +2583,7 @@ export function rssProxyPlugin(): PluginOption {
             apiKey,
             baseURL,
             model,
+            maxAgeDays: bodyMaxAgeDays,
           })
 
           res.writeHead(200, { "Content-Type": "application/json" })
