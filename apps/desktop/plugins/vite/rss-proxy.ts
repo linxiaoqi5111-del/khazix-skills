@@ -148,7 +148,58 @@ function ensureCacheDir(rootDir: string) {
 const RSSHUB_BASE_URL = (process.env.RSSHUB_BASE_URL || "http://localhost:1200").replace(/\/+$/, "")
 const WATCHLIST_FETCH_CONCURRENCY = 5
 const WATCHLIST_FETCH_TIMEOUT_MS = 15_000
-const WATCHLIST_IMPORT_INTERVAL_MS = 30 * 60 * 1000
+// Scheduler runs in Beijing time (Asia/Shanghai, fixed UTC+8, no DST).
+const SCHEDULE_TIMEZONE = "Asia/Shanghai"
+const SCHEDULE_TICK_MS = 30 * 1000
+
+type WatchlistCategory = "微博" | "雪球" | "微信"
+
+interface RefreshPlan {
+  watchlist: WatchlistCategory[]
+  grokX: boolean
+}
+
+// Parse the current time in Beijing into hour/minute plus a minute-resolution
+// stamp used to de-duplicate scheduler ticks.
+function beijingTimeParts(now: Date): { hour: number; minute: number; stamp: string } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: SCHEDULE_TIMEZONE,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).formatToParts(now)
+  const get = (type: string): string => parts.find((p) => p.type === type)?.value ?? "0"
+  const hour = Number(get("hour")) % 24
+  const minute = Number(get("minute"))
+  const stamp = `${get("year")}-${get("month")}-${get("day")} ${hour}:${minute}`
+  return { hour, minute, stamp }
+}
+
+// Decide which sources to refresh at the given Beijing time.
+//  - 雪球/微博 + Grok native X: every 30 min during 09:30–15:00, plus 21:30
+//    and the next morning at 08:30.
+//  - 微信 (公众号): only 21:30 and 08:30.
+// Returns null when nothing is scheduled for that minute.
+function planRefreshAt(hour: number, minute: number): RefreshPlan | null {
+  const onHalfHour = minute === 0 || minute === 30
+  const afterOpen = hour > 9 || (hour === 9 && minute >= 30)
+  const beforeClose = hour < 15 || (hour === 15 && minute === 0)
+  const intraday = onHalfHour && afterOpen && beforeClose
+  const eveningSnapshot = hour === 21 && minute === 30
+  const morningSnapshot = hour === 8 && minute === 30
+
+  const refreshMarket = intraday || eveningSnapshot || morningSnapshot
+  const refreshWechat = eveningSnapshot || morningSnapshot
+  if (!refreshMarket && !refreshWechat) return null
+
+  const watchlist: WatchlistCategory[] = []
+  if (refreshMarket) watchlist.push("微博", "雪球")
+  if (refreshWechat) watchlist.push("微信")
+  return { watchlist, grokX: refreshMarket }
+}
 
 interface WatchlistRssSource {
   name: string
@@ -197,11 +248,14 @@ function loadWatchlist(): WatchlistData {
 }
 
 // Build the list of feeds to import from the watchlist.
-//  - weibo / x: local RSSHub (RSSHUB_BASE_URL) with the relevant cookies
-//    (WEIBO_COOKIES / TWITTER_AUTH_TOKEN) configured.
+//  - weibo: local RSSHub (RSSHUB_BASE_URL) with WEIBO_COOKIES configured.
 //  - xueqiu: scraped via headful Playwright (xueqiu-scraper.mjs); bypasses the
 //    Aliyun WAF and needs no cookie, so it does NOT go through RSSHub.
-//  - rss / wechat ({ name, url }): fetched directly as-is.
+//  - wechat ({ name, url }): fetched directly as-is.
+// X is intentionally excluded here: it is served by the native Grok importer
+// (importGrokX / x_grok_entries.json), not by RSSHub. The watchlist `rss`
+// type is also excluded — generic feeds are managed via the app's own
+// subscription system, not this auto-importer.
 // Plain-string wechat names are skipped because resolving them needs a
 // wechat2rss endpoint + token, which is not available to this plugin.
 function buildWatchlistImportJobs(data: WatchlistData): WatchlistImportJob[] {
@@ -212,16 +266,10 @@ function buildWatchlistImportJobs(data: WatchlistData): WatchlistImportJob[] {
   for (const id of data.xueqiu ?? []) {
     jobs.push({ url: `finhot://xueqiu/${id}`, category: "雪球", kind: "xueqiu", ref: id })
   }
-  for (const username of data.x ?? []) {
-    jobs.push({ url: `${RSSHUB_BASE_URL}/twitter/user/${username}`, category: "X", kind: "rss" })
-  }
   for (const item of data.wechat ?? []) {
     if (typeof item === "object" && item.url) {
       jobs.push({ url: item.url, category: "微信", kind: "rss" })
     }
-  }
-  for (const item of data.rss ?? []) {
-    if (item.url) jobs.push({ url: item.url, category: "资讯", kind: "rss" })
   }
   return jobs
 }
@@ -267,8 +315,11 @@ async function runWatchlistImportJob(job: WatchlistImportJob): Promise<{
   return fetchAndParseFeed(job.url)
 }
 
-async function autoImportWatchlistFeeds(): Promise<number> {
-  const jobs = buildWatchlistImportJobs(loadWatchlist())
+async function autoImportWatchlistFeeds(categories?: WatchlistCategory[]): Promise<number> {
+  const allJobs = buildWatchlistImportJobs(loadWatchlist())
+  const jobs = categories
+    ? allJobs.filter((job) => (categories as string[]).includes(job.category))
+    : allJobs
   if (jobs.length === 0) return 0
 
   let imported = 0
@@ -1388,21 +1439,42 @@ export function rssProxyPlugin(): PluginOption {
       const rootDir = server.config.root ? resolvePath(server.config.root, "../..") : process.cwd()
       ensureCacheDir(rootDir)
 
-      // Auto-import watchlist feeds (weibo / xueqiu / x / wechat / rss) on startup
-      autoImportWatchlistFeeds()
-        .then((n) => {
+      // Warm the cache once on startup: watchlist (weibo / xueqiu / wechat) + Grok X.
+      void (async () => {
+        try {
+          const n = await autoImportWatchlistFeeds()
           if (n > 0) console.info(`[FinHot] Auto-imported ${n} watchlist feeds`)
-        })
-        .catch(() => {
+        } catch {
           /* sources unavailable — skip silently */
-        })
-
-      // Periodic watchlist re-import (every 30 min)
-      setInterval(() => {
-        autoImportWatchlistFeeds().catch(() => {
+        }
+        try {
+          await importGrokX()
+        } catch {
           /* skip */
-        })
-      }, WATCHLIST_IMPORT_INTERVAL_MS)
+        }
+      })()
+
+      // Time-aware scheduler (Beijing time):
+      //  - 雪球/微博 + Grok X: every 30 min 09:30–15:00, plus 21:30 and 08:30.
+      //  - 微信: 21:30 and 08:30 only.
+      // New Grok X posts must be fetched by the agent (written to
+      // x_grok_entries.json); the scheduler only re-imports whatever seed exists.
+      let lastScheduleStamp = ""
+      setInterval(() => {
+        const { hour, minute, stamp } = beijingTimeParts(new Date())
+        if (stamp === lastScheduleStamp) return
+        const plan = planRefreshAt(hour, minute)
+        if (!plan) return
+        lastScheduleStamp = stamp
+        void (async () => {
+          try {
+            if (plan.watchlist.length > 0) await autoImportWatchlistFeeds(plan.watchlist)
+            if (plan.grokX) await importGrokX()
+          } catch {
+            /* skip */
+          }
+        })()
+      }, SCHEDULE_TICK_MS)
 
       // ─── /api/rss/preview — RSS fetch with Jina fallback ───
       server.middlewares.use("/api/rss/preview", async (req, res) => {
@@ -2666,12 +2738,19 @@ export function rssProxyPlugin(): PluginOption {
           return
         }
         try {
-          const count = await autoImportWatchlistFeeds()
+          const watchlist = await autoImportWatchlistFeeds()
+          const grokX = await importGrokX()
           res.writeHead(200, {
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
           })
-          res.end(JSON.stringify({ ok: true, imported: count }))
+          res.end(
+            JSON.stringify({
+              ok: true,
+              imported: watchlist + grokX,
+              breakdown: { watchlist, grokX },
+            }),
+          )
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : "Watchlist refresh failed"
           res.writeHead(502, { "Content-Type": "application/json" })
@@ -2784,31 +2863,6 @@ export function rssProxyPlugin(): PluginOption {
           res.end(JSON.stringify({ ok: true, imported: count }))
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : "Grok X refresh failed"
-          res.writeHead(502, { "Content-Type": "application/json" })
-          res.end(JSON.stringify({ error: message }))
-        }
-      })
-
-      // Optional: full refresh that includes grok X (extend previous 5-class refresh)
-      server.middlewares.use("/api/public/refresh", async (req, res) => {
-        if (handleCors(req, res)) return
-        if (req.method !== "POST") {
-          res.writeHead(405, { "Content-Type": "application/json" })
-          res.end(JSON.stringify({ error: "Method not allowed" }))
-          return
-        }
-        try {
-          const weibo = await autoImportWeiboFeeds()
-          const grokX = await importGrokX()
-          // Other types (xueqiu, wechat, rss) can be triggered similarly or via their own
-          const total = weibo + grokX
-          res.writeHead(200, {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*",
-          })
-          res.end(JSON.stringify({ ok: true, imported: total, breakdown: { weibo, grokX } }))
-        } catch (error: unknown) {
-          const message = error instanceof Error ? error.message : "Full refresh failed"
           res.writeHead(502, { "Content-Type": "application/json" })
           res.end(JSON.stringify({ error: message }))
         }

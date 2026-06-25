@@ -94,6 +94,7 @@ python -m app.feeds_import a.opml b.json --out wl.json
 **X 抓取推荐 native 路径**（公共 Nitter/RSSHub 脆弱，已在代码中保留为 fallback）。
 
 使用内置原生 X 工具替换/补充：
+
 - `python -m app.x_grok prepare` 得到用户列表和提示。
 - 让 agent 用原生工具（x_keyword_search from:USER mode=Latest）拉取并输出 JSON。
 - 保存到 `data/x_grok.json`，采集器自动合并（见 app/x_grok.py 和 watchlist.py 里的 load_grok_items）。
