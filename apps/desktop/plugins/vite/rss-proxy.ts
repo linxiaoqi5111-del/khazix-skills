@@ -166,6 +166,11 @@ interface WatchlistData {
 interface WatchlistImportJob {
   url: string
   category: string
+  // "rss": fetch + parse as RSS/Atom XML.
+  // "xueqiu": scrape via headful Playwright (bypasses Aliyun WAF, no cookie needed).
+  kind: "rss" | "xueqiu"
+  // Source-specific identifier (e.g. xueqiu user id) for non-RSS kinds.
+  ref?: string
 }
 
 function findMonorepoRoot(start: string): string {
@@ -191,30 +196,32 @@ function loadWatchlist(): WatchlistData {
   }
 }
 
-// Build the list of feeds to import from the watchlist. RSSHub-backed sources
-// (weibo / xueqiu / x) require RSSHub at RSSHUB_BASE_URL with the relevant
-// cookies configured. Direct sources (rss, and wechat entries given as
-// { name, url }) are fetched as-is. Plain-string wechat names are skipped
-// because resolving them needs a wechat2rss endpoint + token, which is not
-// available to this server-side plugin.
+// Build the list of feeds to import from the watchlist.
+//  - weibo / x: local RSSHub (RSSHUB_BASE_URL) with the relevant cookies
+//    (WEIBO_COOKIES / TWITTER_AUTH_TOKEN) configured.
+//  - xueqiu: scraped via headful Playwright (xueqiu-scraper.mjs); bypasses the
+//    Aliyun WAF and needs no cookie, so it does NOT go through RSSHub.
+//  - rss / wechat ({ name, url }): fetched directly as-is.
+// Plain-string wechat names are skipped because resolving them needs a
+// wechat2rss endpoint + token, which is not available to this plugin.
 function buildWatchlistImportJobs(data: WatchlistData): WatchlistImportJob[] {
   const jobs: WatchlistImportJob[] = []
   for (const uid of data.weibo ?? []) {
-    jobs.push({ url: `${RSSHUB_BASE_URL}/weibo/user/${uid}`, category: "微博" })
+    jobs.push({ url: `${RSSHUB_BASE_URL}/weibo/user/${uid}`, category: "微博", kind: "rss" })
   }
   for (const id of data.xueqiu ?? []) {
-    jobs.push({ url: `${RSSHUB_BASE_URL}/xueqiu/user/${id}`, category: "雪球" })
+    jobs.push({ url: `finhot://xueqiu/${id}`, category: "雪球", kind: "xueqiu", ref: id })
   }
   for (const username of data.x ?? []) {
-    jobs.push({ url: `${RSSHUB_BASE_URL}/twitter/user/${username}`, category: "X" })
+    jobs.push({ url: `${RSSHUB_BASE_URL}/twitter/user/${username}`, category: "X", kind: "rss" })
   }
   for (const item of data.wechat ?? []) {
     if (typeof item === "object" && item.url) {
-      jobs.push({ url: item.url, category: "微信" })
+      jobs.push({ url: item.url, category: "微信", kind: "rss" })
     }
   }
   for (const item of data.rss ?? []) {
-    if (item.url) jobs.push({ url: item.url, category: "资讯" })
+    if (item.url) jobs.push({ url: item.url, category: "资讯", kind: "rss" })
   }
   return jobs
 }
@@ -244,6 +251,22 @@ async function fetchAndParseFeed(url: string): Promise<{
   }
 }
 
+// Resolve a single import job to a parsed feed + entries, dispatching by kind.
+async function runWatchlistImportJob(job: WatchlistImportJob): Promise<{
+  feed: ReturnType<typeof parseRssFeed>["feed"]
+  entries: ReturnType<typeof parseRssFeed>["entries"]
+} | null> {
+  if (job.kind === "xueqiu" && job.ref) {
+    try {
+      const { statuses, screenName } = await fetchXueqiuTimeline(job.ref)
+      return xueqiuTimelineToFeed(job.ref, screenName, statuses, RSS_ENTRY_LIMIT)
+    } catch {
+      return null
+    }
+  }
+  return fetchAndParseFeed(job.url)
+}
+
 async function autoImportWatchlistFeeds(): Promise<number> {
   const jobs = buildWatchlistImportJobs(loadWatchlist())
   if (jobs.length === 0) return 0
@@ -252,7 +275,7 @@ async function autoImportWatchlistFeeds(): Promise<number> {
   for (let i = 0; i < jobs.length; i += WATCHLIST_FETCH_CONCURRENCY) {
     const batch = jobs.slice(i, i + WATCHLIST_FETCH_CONCURRENCY)
     const results = await Promise.allSettled(
-      batch.map(async (job) => ({ job, result: await fetchAndParseFeed(job.url) })),
+      batch.map(async (job) => ({ job, result: await runWatchlistImportJob(job) })),
     )
     for (const settled of results) {
       if (settled.status === "fulfilled" && settled.value.result) {
