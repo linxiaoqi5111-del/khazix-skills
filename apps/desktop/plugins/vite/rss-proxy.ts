@@ -957,9 +957,11 @@ function selectionLabel(sel: string | null, score: number | null): string {
   return ""
 }
 
-const SCORE_GATE_THRESHOLD = 55
-// 公众号无人工策展门槛，但仍要求近 ENRICH_RECENCY_DAYS 天 + 分数 >= 25（剔除明显噪声）。
-const WECHAT_SCORE_GATE_THRESHOLD = 25
+// 主动关注的账号（公众号/雪球/推特/微博等）统一用「近 ENRICH_RECENCY_DAYS 天 + 分数 >= 25」
+// 的低噪声门槛，而非给"大海捞针"设计的高策展门槛——这些都是用户主动订阅的源。
+const SCORE_GATE_THRESHOLD = 25
+// 每个 feed 在公网展示时最多保留最近 N 条，防止单一账号刷屏灌水。
+const PER_FEED_DISPLAY_LIMIT = 5
 
 /** Detect feed platform from URL and category */
 function detectPlatform(
@@ -989,15 +991,25 @@ function passesScoreGateServer(
   if (!en?.qualityDetails?.scores || Object.keys(en.qualityDetails.scores).length === 0) {
     return false
   }
-  const p = detectPlatform(feed.url, feed.category)
+  // 所有主动订阅的平台统一：近 ENRICH_RECENCY_DAYS 天内 + 分数 >= SCORE_GATE_THRESHOLD。
+  const published = new Date(entry.publishedAt ?? 0).getTime()
+  if (Date.now() - published > ENRICH_RECENCY_DAYS * 24 * 60 * 60 * 1000) return false
   const qs = en.qualityScore
-  if (p === "wechat") {
-    // 公众号：近 ENRICH_RECENCY_DAYS 天内且分数 >= 25 才展示（无人工策展门槛）。
-    const published = new Date(entry.publishedAt ?? 0).getTime()
-    if (Date.now() - published > ENRICH_RECENCY_DAYS * 24 * 60 * 60 * 1000) return false
-    return qs != null && qs >= WECHAT_SCORE_GATE_THRESHOLD
-  }
   return qs != null && qs >= SCORE_GATE_THRESHOLD
+}
+
+/** Keep only the most-recent PER_FEED_DISPLAY_LIMIT entries per feed (anti-flood). */
+function capPerFeed(entries: CachedEntry[]): CachedEntry[] {
+  const seen: Record<string, number> = {}
+  const out: CachedEntry[] = []
+  for (const e of [...entries].sort(
+    (a, b) => new Date(b.publishedAt ?? 0).getTime() - new Date(a.publishedAt ?? 0).getTime(),
+  )) {
+    const n = (seen[e.feedId] ?? 0) + 1
+    seen[e.feedId] = n
+    if (n <= PER_FEED_DISPLAY_LIMIT) out.push(e)
+  }
+  return out
 }
 
 function scoreValue(en: CachedEnrichment | undefined): number | null {
@@ -2819,8 +2831,10 @@ export function rssProxyPlugin(): PluginOption {
             })
           }
 
-          // Platform-aware score gate: WeChat bypasses, others need score >= threshold
-          entries = entries.filter((e) => passesScoreGateServer(e, enrichments, manifest))
+          // Score gate (recency + qualityScore), then cap each feed to its latest few (anti-flood).
+          entries = capPerFeed(
+            entries.filter((e) => passesScoreGateServer(e, enrichments, manifest)),
+          )
 
           const items = entries.slice(0, limit).map((e) => {
             const en = enrichments[e.id] ?? {}
@@ -3345,8 +3359,8 @@ export function rssProxyPlugin(): PluginOption {
         const allFeeds = Object.values(manifest.feeds).sort(
           (a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
         )
-        // Apply the same platform-aware score gate as /api/public/items:
-        // WeChat bypasses, all other platforms need qualityScore >= threshold.
+        // Apply the same score gate as /api/public/items (recency + qualityScore),
+        // then cap each feed to its latest PER_FEED_DISPLAY_LIMIT entries (anti-flood).
         // Feeds left with no qualifying entries are dropped from the page.
         const entriesByFeed: Record<string, CachedEntry[]> = {}
         for (const feed of allFeeds) {
@@ -3354,7 +3368,9 @@ export function rssProxyPlugin(): PluginOption {
           if (!existsSync(entriesFile)) continue
           try {
             const parsed: CachedEntry[] = JSON.parse(readFileSync(entriesFile, "utf-8"))
-            const gated = parsed.filter((e) => passesScoreGateServer(e, enrichments, manifest))
+            const gated = capPerFeed(
+              parsed.filter((e) => passesScoreGateServer(e, enrichments, manifest)),
+            )
             if (gated.length > 0) entriesByFeed[feed.id] = gated
           } catch {
             /* skip */
