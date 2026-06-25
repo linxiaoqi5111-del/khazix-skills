@@ -2731,6 +2731,7 @@ function buildItemDetailHtml(
         ? `观察 ${score}`
         : ""
   const reason = en.recommendationReason ?? ""
+  const isWechat = detectPlatform(feed?.url, feed?.category) === "wechat"
   const summary = en.summary ?? ""
   const tags = en.tags ?? []
   const translation = en.translation ?? null
@@ -2831,7 +2832,7 @@ ${
     : ""
 }
 ${
-  reason
+  reason && !isWechat
     ? `<div class="section reason"><div class="section-title">精选理由</div><div class="summary-text">${esc(reason)}</div></div>`
     : ""
 }
@@ -3294,7 +3295,8 @@ function renderCard(e,cl){
   if(tags.length)foot+='<div class="tags">'+tags.map(function(t){return '<span class="tag'+tagColorClass(t)+'">'+esc(typeof t==="object"?(t.label||t.name||""):t)+'</span>'}).join("")+'</div>';
   if(cl.leaders[e.id])foot+='<button class="cluster '+(expandedClusters[e.id]?"on":"")+'" data-cluster="'+esc(e.id)+'">+'+(cl.leaders[e.id].length-1)+' 相关</button>';
   if(foot)h+='<div class="card-foot">'+foot+'</div>';
-  if(reason){h+='<div class="card-reason">\u63A8\u8350\u7406\u7531\uFF1A'+esc(reason)+'</div>'}
+  var plat=platform(f);
+  if(reason&&plat!=="wechat"){h+='<div class="card-reason">\u63A8\u8350\u7406\u7531\uFF1A'+esc(reason)+'</div>'}
   return h+'</article>';
 }
 
@@ -3845,7 +3847,8 @@ function renderCard(e,cl){
     h+='<div class="card-footer"><div class="card-tags">'+tagsHtml+'</div>'+clusterHtml+'</div>';
   }
 
-  if(reason){h+='<div class="card-reason">\u63A8\u8350\u7406\u7531\uFF1A'+esc(reason)+'</div>'}
+  var platSV=platform(feedMap[e.feedId]);
+  if(reason&&platSV!=="wechat"){h+='<div class="card-reason">\u63A8\u8350\u7406\u7531\uFF1A'+esc(reason)+'</div>'}
 
   h+='</div>';
   return h;
