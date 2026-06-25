@@ -44,13 +44,13 @@ python -m app.collector --loop 30
 
 ## API
 
-| 端点 | 说明 |
-|------|------|
+| 端点                                                                                  | 说明                                                                  |
+| ------------------------------------------------------------------------------------- | --------------------------------------------------------------------- |
 | `GET /api/hotwords?day=&baseline=7&limit=50&gate=1&min_spec_ratio=0.4&board=industry` | 热词榜（board=industry/event/entity 三榜；gate=0 关闭闸口看全部热词） |
-| `GET /api/term/{term}?day=` | 单词详情：历史曲线 + 相关快讯（含每条入库分 `score`、`admitted`） |
-| `GET /api/stats` | 各源条数、各日条数 + 准入漏斗（`admitted`/`archived`/`deduped`） |
-| `GET /feed/hot.json?day=&baseline=7&limit=30&gate=1&min_spec_ratio=0.4` | 机器可读热榜：三榜合一 + 元信息，供下游聚合/播报 |
-| `GET /feed/brief.json` / `GET /feed/brief.md` | 规则简报：导语 + 三段榜单（结构化 / Markdown 文本） |
+| `GET /api/term/{term}?day=`                                                           | 单词详情：历史曲线 + 相关快讯（含每条入库分 `score`、`admitted`）     |
+| `GET /api/stats`                                                                      | 各源条数、各日条数 + 准入漏斗（`admitted`/`archived`/`deduped`）      |
+| `GET /feed/hot.json?day=&baseline=7&limit=30&gate=1&min_spec_ratio=0.4`               | 机器可读热榜：三榜合一 + 元信息，供下游聚合/播报                      |
+| `GET /feed/brief.json` / `GET /feed/brief.md`                                         | 规则简报：导语 + 三段榜单（结构化 / Markdown 文本）                   |
 
 ### JSON Feed 与规则简报
 
@@ -84,14 +84,23 @@ python -m app.feeds_import a.opml b.json --out wl.json
 
 ```json
 {
-  "weibo": ["1234567890"],      // 微博博主 uid（数字），需游客 cookie（见下）
-  "xueqiu": ["9876543210"],     // 雪球用户 id（数字）
-  "wechat": [],                  // 公众号（需配合 RSSHub 等代理渠道，见 app/watchlist.py）
-  "x": ["elonmusk"]              // X(Twitter) 用户名（不带@），经 Nitter/RSSHub 免费通路抓取
+  "weibo": ["1234567890"], // 微博博主 uid（数字），需游客 cookie（见下）
+  "xueqiu": ["9876543210"], // 雪球用户 id（数字）
+  "wechat": [], // 公众号（需配合 RSSHub 等代理渠道，见 app/watchlist.py）
+  "x": ["elonmusk"] // X(Twitter) 用户名（不带@），经 Nitter/RSSHub 免费通路抓取
 }
 ```
 
-X 抓取走公共 Nitter 实例（xcancel.com 等）的 RSS，多实例自动切换；公共实例不稳定，全部失败时跳过该博主并记录错误，后续可升级为付费 API 或登录态抓取。
+**X 抓取推荐 native 路径**（公共 Nitter/RSSHub 脆弱，已在代码中保留为 fallback）。
+
+使用内置原生 X 工具替换/补充：
+
+- `python -m app.x_grok prepare` 得到用户列表和提示。
+- 让 agent 用原生工具（x_keyword_search from:USER mode=Latest）拉取并输出 JSON。
+- 保存到 `data/x_grok.json`，采集器自动合并（见 app/x_grok.py 和 watchlist.py 里的 load_grok_items）。
+- source 标 `(native)`，去重会处理与 RSS 的重叠。
+
+完整说明见上方“增强 X 部分”或直接看 app/x_grok.py。旧 RSS 代码仍在 watchlist.py 的 fetch_x_user 中。
 
 雪球匿名通路会先访问 /about 拿临时 token；机房/数据中心 IP 常被阿里云 WAF 滑块拦截（报错 `雪球 WAF 滑块拦截`），此时可在自己浏览器登录雪球后，把 cookie 填入环境变量 `XUEQIU_COOKIE` 或 `finhot/data/xueqiu_cookie.txt`（已 gitignore）；住宅/境内 IP 一般无需配置。
 

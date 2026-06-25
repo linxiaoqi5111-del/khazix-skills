@@ -14,11 +14,13 @@ const {
   getGeneralSettingsMock,
   refreshAllLocalRssFeedsMock,
   seedDefaultLocalRssFeedsIfNeededMock,
+  cleanupDefaultFeedsIfNeededMock,
   invalidateEntriesQueryMock,
 } = vi.hoisted(() => ({
   getGeneralSettingsMock: vi.fn(),
   refreshAllLocalRssFeedsMock: vi.fn(),
   seedDefaultLocalRssFeedsIfNeededMock: vi.fn(),
+  cleanupDefaultFeedsIfNeededMock: vi.fn(),
   invalidateEntriesQueryMock: vi.fn(),
 }))
 
@@ -29,6 +31,7 @@ vi.mock("~/atoms/settings/general", () => ({
 vi.mock("./service", () => ({
   refreshAllLocalRssFeeds: refreshAllLocalRssFeedsMock,
   seedDefaultLocalRssFeedsIfNeeded: seedDefaultLocalRssFeedsIfNeededMock,
+  cleanupDefaultFeedsIfNeeded: cleanupDefaultFeedsIfNeededMock,
 }))
 
 vi.mock("@follow/store/entry/hooks", () => ({
@@ -58,6 +61,7 @@ describe("localRssRefreshScheduler", () => {
       successCount: 0,
       failureCount: 0,
     })
+    cleanupDefaultFeedsIfNeededMock.mockResolvedValue(void 0)
     invalidateEntriesQueryMock.mockResolvedValue(void 0)
   })
 

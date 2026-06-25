@@ -14,10 +14,15 @@
       <stop offset="100%" stop-color="#FFFFFF"/>
     </linearGradient>
   </defs>
+  <!-- Rounded square background -->
   <rect width="512" height="512" rx="108" fill="url(#bg)"/>
+  <!-- Outer flame / uptrend shape -->
   <path d="M256 100c-12 40-56 80-72 130-20 62 4 120 72 150 68-30 92-88 72-150C312 180 268 140 256 100z" fill="url(#flame)" opacity="0.95"/>
+  <!-- Inner bright core -->
   <path d="M256 190c-8 28-32 52-42 82-12 38 4 74 42 92 38-18 54-54 42-92-10-30-34-54-42-82z" fill="url(#inner)" opacity="0.9"/>
+  <!-- Stylized uptrend chart line at bottom -->
   <path d="M140 370 l40-30 36 16 40-50 40 20 36-40 40 14" stroke="rgba(255,255,255,0.6)" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <!-- Small dot accents on chart line -->
   <circle cx="180" cy="340" r="4" fill="rgba(255,255,255,0.7)"/>
   <circle cx="216" cy="356" r="4" fill="rgba(255,255,255,0.7)"/>
   <circle cx="256" cy="306" r="4" fill="rgba(255,255,255,0.7)"/>
