@@ -8,8 +8,8 @@ describe("getVisibleLocalEntryIds", () => {
       getVisibleLocalEntryIds({
         sourceIds: ["entry-1", "entry-2"],
         entries: {
-          "entry-1": { id: "entry-1", read: true },
-          "entry-2": { id: "entry-2", read: false },
+          "entry-1": { id: "entry-1", read: true, title: "Entry One", content: "Body one" },
+          "entry-2": { id: "entry-2", read: false, title: "Entry Two", content: "Body two" },
         },
         stickyVisibleIds: new Set(["entry-1", "entry-2"]),
         unreadOnly: true,
@@ -22,8 +22,8 @@ describe("getVisibleLocalEntryIds", () => {
       getVisibleLocalEntryIds({
         sourceIds: ["entry-1", "entry-2"],
         entries: {
-          "entry-1": { id: "entry-1", read: true },
-          "entry-2": { id: "entry-2", read: false },
+          "entry-1": { id: "entry-1", read: true, title: "Entry One", content: "Body one" },
+          "entry-2": { id: "entry-2", read: false, title: "Entry Two", content: "Body two" },
         },
         stickyVisibleIds: new Set<string>(),
         unreadOnly: true,
@@ -36,8 +36,8 @@ describe("getVisibleLocalEntryIds", () => {
       getVisibleLocalEntryIds({
         sourceIds: ["entry-2"],
         entries: {
-          "entry-1": { id: "entry-1", read: true },
-          "entry-2": { id: "entry-2", read: false },
+          "entry-1": { id: "entry-1", read: true, title: "Entry One", content: "Body one" },
+          "entry-2": { id: "entry-2", read: false, title: "Entry Two", content: "Body two" },
         },
         stickyVisibleIds: new Set(["entry-1", "entry-2"]),
         unreadOnly: true,

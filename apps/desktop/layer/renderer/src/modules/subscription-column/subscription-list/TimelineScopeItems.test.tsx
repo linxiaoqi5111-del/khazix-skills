@@ -152,7 +152,7 @@ describe("TimelineScopeItems", () => {
       root!.render(<TimelineScopeItems />)
     })
 
-    expect(getScopeLabels(container)).toEqual(["Today", "All Unread", "Starred"])
+    expect(getScopeLabels(container)).toEqual(["Today", "All Unread", "Starred", "热点雷达"])
   })
 
   test.each([
