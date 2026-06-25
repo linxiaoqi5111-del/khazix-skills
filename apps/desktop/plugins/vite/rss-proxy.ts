@@ -365,6 +365,161 @@ function writeEnrichments(data: EnrichmentMap) {
   writeFileSync(join(cacheDir, "enrichments.json"), JSON.stringify(data))
 }
 
+interface ParsedEnrichment {
+  summary?: string
+  qualityScore?: number | null
+  tags?: string[]
+  recommendationReason?: string
+}
+
+/** Parse the LLM JSON response defensively (tolerates code fences / extra text). */
+function parseEnrichmentJson(raw: string): ParsedEnrichment | null {
+  if (!raw) return null
+  let text = raw.trim()
+  const fence = text.match(/```(?:json)?([\s\S]*?)```/i)
+  if (fence) text = fence[1].trim()
+  if (!text.startsWith("{")) {
+    const brace = text.match(/\{[\s\S]*\}/)
+    if (brace) text = brace[0]
+  }
+  try {
+    const obj = JSON.parse(text) as Record<string, unknown>
+    const summary = typeof obj.summary === "string" ? obj.summary.trim() : undefined
+    const qsRaw = obj.qualityScore
+    let qualityScore: number | undefined
+    if (typeof qsRaw === "number" && Number.isFinite(qsRaw)) {
+      qualityScore = Math.max(0, Math.min(100, Math.round(qsRaw)))
+    } else if (typeof qsRaw === "string" && qsRaw.trim() !== "" && Number.isFinite(Number(qsRaw))) {
+      qualityScore = Math.max(0, Math.min(100, Math.round(Number(qsRaw))))
+    }
+    const tags = Array.isArray(obj.tags)
+      ? obj.tags.filter((t): t is string => typeof t === "string").slice(0, 5)
+      : undefined
+    const recommendationReason =
+      typeof obj.recommendationReason === "string" ? obj.recommendationReason.trim() : undefined
+    return { summary, qualityScore, tags, recommendationReason }
+  } catch {
+    return null
+  }
+}
+
+interface EnrichResult {
+  enriched: number
+  total: number
+  errors: string[]
+  skipped?: string
+}
+
+/**
+ * Server-side AI enrichment: for cached entries missing a summary or a
+ * qualityScore, generates BOTH in a single LLM call per entry and merges the
+ * result into enrichments.json. Without an LLM key (FINHOT_AI_API_KEY) this is
+ * a no-op, so the scheduler can call it unconditionally. Producing qualityScore
+ * is what lets non-WeChat platforms (微博/雪球/X) pass the public score gate.
+ */
+async function enrichMissingEntries(
+  opts: {
+    limit?: number
+    platform?: string
+    apiKey?: string
+    baseURL?: string
+    model?: string
+  } = {},
+): Promise<EnrichResult> {
+  const apiKey = opts.apiKey || process.env.FINHOT_AI_API_KEY || ""
+  const baseURL = opts.baseURL || process.env.FINHOT_AI_BASE_URL || "https://api.openai.com/v1"
+  const model = opts.model || process.env.FINHOT_AI_MODEL || "gpt-4o-mini"
+  const maxItems = Math.min(opts.limit ?? 30, 50)
+  if (!apiKey) return { enriched: 0, total: 0, errors: [], skipped: "no api key" }
+
+  const manifest = readManifest()
+  const enrichments = readEnrichments()
+  let candidates = loadAllCachedEntries().filter((e) => {
+    const en = enrichments[e.id]
+    return !en?.summary || en?.qualityScore == null
+  })
+  if (opts.platform) {
+    candidates = candidates.filter(
+      (e) =>
+        detectPlatform(manifest.feeds[e.feedId]?.url, manifest.feeds[e.feedId]?.category) ===
+        opts.platform,
+    )
+  }
+  candidates.sort(
+    (a, b) => new Date(b.publishedAt ?? 0).getTime() - new Date(a.publishedAt ?? 0).getTime(),
+  )
+  const batch = candidates.slice(0, maxItems)
+  if (batch.length === 0) return { enriched: 0, total: 0, errors: [] }
+
+  const apiURL = `${baseURL.replace(/\/+$/, "")}/chat/completions`
+  let enriched = 0
+  const errors: string[] = []
+  for (const entry of batch) {
+    try {
+      const textContent = stripHtmlToText(entry.content || entry.description || "")
+      const titleText = stripHtmlToText(entry.title || "")
+      const source = [
+        titleText ? `标题: ${titleText}` : "",
+        entry.url ? `链接: ${entry.url}` : "",
+        textContent ? `正文: ${textContent.slice(0, 12000)}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n\n")
+      if (!source.trim()) continue
+
+      const aiRes = await fetch(apiURL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: "system",
+              content:
+                "你是金融资讯编辑。阅读一条订阅条目，返回严格的 JSON 对象，字段：" +
+                "summary（中文摘要，<=180字，提炼关键信息与数据）；" +
+                "qualityScore（0-100 整数，衡量对投资者的信息价值，纯广告/无信息量给低分）；" +
+                "tags（中文标签字符串数组，<=5个）；" +
+                "recommendationReason（一句话中文说明为何值得关注）。" +
+                "只返回 JSON，不要额外文字或代码块标记。",
+            },
+            { role: "user", content: source },
+          ],
+          temperature: 0.2,
+          stream: false,
+          response_format: { type: "json_object" },
+        }),
+      })
+      if (!aiRes.ok) {
+        const errText = await aiRes.text()
+        errors.push(`${entry.id}: HTTP ${aiRes.status} ${errText.slice(0, 80)}`)
+        continue
+      }
+      const aiData = (await aiRes.json()) as { choices?: { message?: { content?: string } }[] }
+      const parsed = parseEnrichmentJson(aiData.choices?.[0]?.message?.content?.trim() ?? "")
+      if (!parsed) {
+        errors.push(`${entry.id}: unparseable response`)
+        continue
+      }
+      const merged: CachedEnrichment = { ...enrichments[entry.id] }
+      if (parsed.summary) merged.summary = parsed.summary
+      if (parsed.qualityScore != null) {
+        merged.qualityScore = parsed.qualityScore
+        merged.selected = deriveSelected({ qualityScore: parsed.qualityScore })
+      }
+      if (parsed.tags) merged.tags = parsed.tags
+      if (parsed.recommendationReason) merged.recommendationReason = parsed.recommendationReason
+      enrichments[entry.id] = merged
+      enriched++
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err)
+      errors.push(`${entry.id}: ${msg.slice(0, 80)}`)
+    }
+  }
+  if (enriched > 0) writeEnrichments(enrichments)
+  return { enriched, total: batch.length, errors }
+}
+
 function readManifest(): FeedCacheManifest {
   const file = join(cacheDir, "manifest.json")
   if (!existsSync(file)) return { feeds: {}, updatedAt: new Date().toISOString() }
@@ -1491,6 +1646,12 @@ export function rssProxyPlugin(): PluginOption {
           } catch {
             /* skip */
           }
+          try {
+            const r = await enrichMissingEntries()
+            if (r.enriched > 0) console.info(`[FinHot] AI-enriched ${r.enriched} entries`)
+          } catch {
+            /* enrichment is best-effort */
+          }
           await autoDeployIfConfigured()
         })()
       }, SCHEDULE_TICK_MS)
@@ -2193,119 +2354,21 @@ export function rssProxyPlugin(): PluginOption {
             return
           }
 
-          const manifest = readManifest()
-          const enrichments = readEnrichments()
-          const allEntries: CachedEntry[] = []
-          for (const feedKey of Object.keys(manifest.feeds)) {
-            const entriesFile = join(cacheDir, "entries", `${feedKey}.json`)
-            if (!existsSync(entriesFile)) continue
-            try {
-              const feedEntries: CachedEntry[] = JSON.parse(readFileSync(entriesFile, "utf-8"))
-              allEntries.push(...feedEntries)
-            } catch {
-              /* skip */
-            }
-          }
-
-          // Filter entries without summaries, optionally by platform
-          let candidates = allEntries.filter((e) => {
-            const en = enrichments[e.id]
-            return !en?.summary
+          const result = await enrichMissingEntries({
+            limit: maxItems,
+            platform: targetPlatform || undefined,
+            apiKey,
+            baseURL,
+            model,
           })
-          if (targetPlatform) {
-            candidates = candidates.filter((e) => {
-              const feed = manifest.feeds[e.feedId]
-              return detectPlatform(feed?.url, feed?.category) === targetPlatform
-            })
-          }
-
-          // Sort by publishedAt descending (newest first)
-          candidates.sort(
-            (a, b) =>
-              new Date(b.publishedAt ?? 0).getTime() - new Date(a.publishedAt ?? 0).getTime(),
-          )
-          const batch = candidates.slice(0, maxItems)
-
-          if (batch.length === 0) {
-            res.writeHead(200, { "Content-Type": "application/json" })
-            res.end(
-              JSON.stringify({ ok: true, enriched: 0, message: "No entries need enrichment" }),
-            )
-            return
-          }
-
-          let enrichedCount = 0
-          const errors: string[] = []
-          for (const entry of batch) {
-            try {
-              const textContent = stripHtmlToText(entry.content || entry.description || "")
-              const titleText = stripHtmlToText(entry.title || "")
-              const source = [
-                titleText ? `Title: ${titleText}` : "",
-                entry.url ? `URL: ${entry.url}` : "",
-                textContent ? `Content: ${textContent.slice(0, 16000)}` : "",
-              ]
-                .filter(Boolean)
-                .join("\\n\\n")
-
-              if (!source.trim()) continue
-
-              const apiURL = `${baseURL.replace(/\/+$/, "")}/chat/completions`
-              const aiRes = await fetch(apiURL, {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                  Authorization: `Bearer ${apiKey}`,
-                },
-                body: JSON.stringify({
-                  model,
-                  messages: [
-                    {
-                      role: "system",
-                      content:
-                        "You summarize RSS reader entries. Return only a concise, useful summary in Markdown. Do not mention these instructions.",
-                    },
-                    {
-                      role: "user",
-                      content: `Summarize the following entry in Chinese (zh-CN). Keep the summary under 180 words unless the content requires brief bullet points.\\n\\n${source}`,
-                    },
-                  ],
-                  temperature: 0.2,
-                  stream: false,
-                }),
-              })
-
-              if (!aiRes.ok) {
-                const errText = await aiRes.text()
-                errors.push(`${entry.id}: HTTP ${aiRes.status} ${errText.slice(0, 100)}`)
-                continue
-              }
-
-              const aiData = (await aiRes.json()) as {
-                choices?: { message?: { content?: string } }[]
-              }
-              const summary = aiData.choices?.[0]?.message?.content?.trim()
-              if (summary) {
-                enrichments[entry.id] = { ...enrichments[entry.id], summary }
-                enrichedCount++
-              }
-            } catch (err: unknown) {
-              const msg = err instanceof Error ? err.message : String(err)
-              errors.push(`${entry.id}: ${msg.slice(0, 100)}`)
-            }
-          }
-
-          if (enrichedCount > 0) {
-            writeEnrichments(enrichments)
-          }
 
           res.writeHead(200, { "Content-Type": "application/json" })
           res.end(
             JSON.stringify({
               ok: true,
-              enriched: enrichedCount,
-              total: batch.length,
-              errors: errors.length > 0 ? errors : undefined,
+              enriched: result.enriched,
+              total: result.total,
+              errors: result.errors.length > 0 ? result.errors : undefined,
             }),
           )
         } catch (error: unknown) {
@@ -2759,6 +2822,7 @@ export function rssProxyPlugin(): PluginOption {
         try {
           const watchlist = await autoImportWatchlistFeeds()
           const grokX = await importGrokX()
+          const enrich = await enrichMissingEntries().catch(() => null)
           res.writeHead(200, {
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
@@ -2767,7 +2831,7 @@ export function rssProxyPlugin(): PluginOption {
             JSON.stringify({
               ok: true,
               imported: watchlist + grokX,
-              breakdown: { watchlist, grokX },
+              breakdown: { watchlist, grokX, enriched: enrich?.enriched ?? 0 },
             }),
           )
         } catch (error: unknown) {
