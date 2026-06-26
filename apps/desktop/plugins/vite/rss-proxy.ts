@@ -4024,7 +4024,7 @@ else activeView="smart-unread";
 
 function renderSmartNav(){
   var todayCount=allEntries.filter(function(e){return isToday(e)&&passesScoreGate(e)}).length;
-  var selectedCount=allEntries.filter(function(e){return selStatus(enrichments[e.id])==="selected"||platform(feedMap[e.feedId])==="wechat"}).length;
+  var selectedCount=allEntries.filter(function(e){return selStatus(enrichments[e.id])==="selected"||platform(feedMap[e.feedId])!=="other"}).length;
   var items=[
     {id:"smart-selected",label:"\u7CBE\u9009",count:selectedCount,ico:"star"},
     {id:"smart-today",label:"\u4ECA\u5929",count:todayCount,ico:"today"},
@@ -4046,7 +4046,7 @@ function renderTabs(){
 function selectedEntries(){
   var list=[];
   if(activeCat!=="all"){list=allEntries.slice();if(activeCat!=="wechat")list=list.filter(passesScoreGate)}
-  else if(activeView==="smart-selected")list=allEntries.filter(function(e){return selStatus(enrichments[e.id])==="selected"||platform(feedMap[e.feedId])==="wechat"});
+  else if(activeView==="smart-selected")list=allEntries.filter(function(e){return selStatus(enrichments[e.id])==="selected"||platform(feedMap[e.feedId])!=="other"});
   else if(activeView==="smart-today")list=allEntries.filter(function(e){return isToday(e)&&passesScoreGate(e)});
   else list=allEntries.filter(passesScoreGate);
   return list.filter(visibleByCat).sort(function(a,b){return new Date(b.publishedAt).getTime()-new Date(a.publishedAt).getTime()});
