@@ -571,6 +571,26 @@ function buildRichSummaryUserPrompt(source: string): string {
   return `请为下面的内容写一段分段富摘要（2-3 段，简体中文），并按要求高亮关键信息。\n\n${source}`
 }
 
+/**
+ * Translation prompt: render non-Chinese entries (mainly English X/Twitter) into
+ * Simplified Chinese. Returns a JSON object with translated title + body so the
+ * detail page's existing 翻译标题/翻译内容 sections (en.translation) can render.
+ */
+const TRANSLATION_SYSTEM_PROMPT = `你是一名专业的财经/科技译者。请把用户给出的标题和正文忠实翻译成简体中文。
+要求：
+- 忠实、通顺、不增删信息，不做总结或评论。
+- 保留专有名词、公司名、人名、股票代码/cashtag（如 $NVDA）、产品名的通用译法；不确定时保留英文原文并可在括号内附中文。
+- 保留原文的换行与段落结构；不要输出 markdown 标题或代码块。
+- 严格输出 JSON 对象，且仅此对象：{"title": "<标题中译，没有标题则空字符串>", "content": "<正文中译>"}`
+
+function buildTranslationUserPrompt(title: string, body: string): string {
+  const parts = [
+    title ? `标题:\n${title}` : "",
+    body ? `正文:\n${body.slice(0, 8000)}` : "",
+  ].filter(Boolean)
+  return `请翻译下面的内容，并按要求只返回 JSON 对象。\n\n${parts.join("\n\n")}`
+}
+
 /** Step 2a: generate a rich multi-sentence summary. Returns null on any failure. */
 async function generateRichSummary(
   apiURL: string,
@@ -596,6 +616,74 @@ async function generateRichSummary(
     const data = (await res.json()) as { choices?: { message?: { content?: string } }[] }
     const text = data.choices?.[0]?.message?.content?.trim()
     return text && text.length > 0 ? text : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Heuristic language check: treat an entry as already Chinese when CJK characters
+ * dominate its letters. Used to decide whether a translation is worth generating
+ * (mainly to catch English X/Twitter content). Returns true when there is nothing
+ * translatable so we skip empty work.
+ */
+function isLikelyChinese(text: string): boolean {
+  const cjk = (text.match(/[\u4e00-\u9fff]/g) ?? []).length
+  const latin = (text.match(/[A-Z]/gi) ?? []).length
+  if (cjk + latin === 0) return true
+  return cjk / (cjk + latin) >= 0.2
+}
+
+/** Whether an entry still needs a Chinese translation written to en.translation. */
+function needsForeignTranslation(entry: CachedEntry, en: CachedEnrichment | undefined): boolean {
+  if (en?.translation?.content || en?.translation?.readabilityContent) return false
+  const text = `${entry.title ?? ""}\n${stripHtmlToText(entry.content || entry.description || "")}`
+  if (!text.trim()) return false
+  return !isLikelyChinese(text)
+}
+
+/**
+ * Step 2c: translate a non-Chinese entry's title + body into Simplified Chinese.
+ * Returns null on any failure so enrichment can carry on without a translation.
+ */
+async function generateTranslation(
+  apiURL: string,
+  apiKey: string,
+  model: string,
+  title: string,
+  body: string,
+): Promise<{ title: string | null; content: string | null } | null> {
+  if (!title.trim() && !body.trim()) return null
+  try {
+    const res = await fetch(apiURL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+      body: JSON.stringify({
+        model,
+        messages: [
+          { role: "system", content: TRANSLATION_SYSTEM_PROMPT },
+          { role: "user", content: buildTranslationUserPrompt(title, body) },
+        ],
+        temperature: 0.1,
+        stream: false,
+        response_format: { type: "json_object" },
+      }),
+    })
+    if (!res.ok) return null
+    const data = (await res.json()) as { choices?: { message?: { content?: string } }[] }
+    let text = data.choices?.[0]?.message?.content?.trim() ?? ""
+    if (!text) return null
+    const fence = text.match(/```(?:json)?([\s\S]*?)```/i)
+    if (fence) text = fence[1].trim()
+    if (!text.startsWith("{")) {
+      const brace = text.match(/\{[\s\S]*\}/)
+      if (brace) text = brace[0]
+    }
+    const parsed = JSON.parse(text) as { title?: unknown; content?: unknown }
+    const trTitle = typeof parsed.title === "string" ? parsed.title.trim() : ""
+    const trContent = typeof parsed.content === "string" ? parsed.content.trim() : ""
+    if (!trTitle && !trContent) return null
+    return { title: trTitle || null, content: trContent || null }
   } catch {
     return null
   }
@@ -702,9 +790,11 @@ async function enrichMissingEntries(
 
     const en = enrichments[e.id]
     // Re-enrich entries that are missing a summary/score OR that lack the
-    // canonical 6-dimension breakdown (e.g. legacy ad-hoc enrichments).
+    // canonical 6-dimension breakdown (e.g. legacy ad-hoc enrichments), OR that
+    // are non-Chinese and still missing a translation (mainly English X/Twitter).
     // 仅近期 + 缺关键字段：避免历史旧条目反复消耗 LLM。
-    return !en?.summary || en?.qualityScore == null || !en?.qualityDetails?.scores
+    const needsScore = !en?.summary || en?.qualityScore == null || !en?.qualityDetails?.scores
+    return needsScore || needsForeignTranslation(e, en)
   })
 
   // 每 feed 只取最近的 5 条需要 AI 的（对齐 Focal 新订阅只摘前 5 条规则）。
@@ -753,67 +843,88 @@ async function enrichMissingEntries(
         .join("\n\n")
       if (!source.trim()) continue
 
-      const aiRes = await fetch(apiURL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({
-          model,
-          messages: [
-            { role: "system", content: QUALITY_SCORE_SYSTEM_PROMPT },
-            { role: "user", content: buildQualityScoreUserPrompt(source) },
-          ],
-          temperature: 0.1,
-          stream: false,
-          response_format: { type: "json_object" },
-        }),
-      })
-      if (!aiRes.ok) {
-        const errText = await aiRes.text()
-        errors.push(`${entry.id}: HTTP ${aiRes.status} ${errText.slice(0, 80)}`)
-        continue
+      const existing = enrichments[entry.id]
+      const needsScore =
+        !existing?.summary || existing?.qualityScore == null || !existing?.qualityDetails?.scores
+      const merged: CachedEnrichment = { ...existing }
+      // The cheap one-sentence fallback summary from the scoring call; reused as
+      // embedding input. Falls back to any existing summary when scoring is skipped.
+      let fallbackSummary = existing?.summary ?? ""
+
+      // Step 1: score the entry (only when missing) and store a cheap fallback summary.
+      if (needsScore) {
+        const aiRes = await fetch(apiURL, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model,
+            messages: [
+              { role: "system", content: QUALITY_SCORE_SYSTEM_PROMPT },
+              { role: "user", content: buildQualityScoreUserPrompt(source) },
+            ],
+            temperature: 0.1,
+            stream: false,
+            response_format: { type: "json_object" },
+          }),
+        })
+        if (!aiRes.ok) {
+          const errText = await aiRes.text()
+          errors.push(`${entry.id}: HTTP ${aiRes.status} ${errText.slice(0, 80)}`)
+          continue
+        }
+        const aiData = (await aiRes.json()) as { choices?: { message?: { content?: string } }[] }
+        const parsed = parseEnrichmentJson(aiData.choices?.[0]?.message?.content?.trim() ?? "")
+        if (!parsed) {
+          errors.push(`${entry.id}: unparseable response`)
+          continue
+        }
+        fallbackSummary = parsed.summary
+        merged.summary = parsed.summary
+        merged.qualityScore = parsed.quality_score
+        merged.qualityTier = getQualityScoreTier(parsed.quality_score)
+        merged.selected = deriveSelected({ qualityScore: parsed.quality_score })
+        const contentTypes: Record<string, number> = {}
+        for (const [key, value] of Object.entries(parsed.content_types)) {
+          if (typeof value === "number") contentTypes[key] = value
+        }
+        merged.qualityDetails = {
+          contentTypes,
+          scores: parsed.scores,
+          positiveReasons: parsed.positive_reasons,
+          negativeReasons: parsed.negative_reasons,
+          confidence: parsed.confidence,
+          summary: parsed.summary,
+        }
+        // Surface the strongest positive reason as the recommendation rationale.
+        if (parsed.positive_reasons[0]) merged.recommendationReason = parsed.positive_reasons[0]
       }
-      const aiData = (await aiRes.json()) as { choices?: { message?: { content?: string } }[] }
-      const parsed = parseEnrichmentJson(aiData.choices?.[0]?.message?.content?.trim() ?? "")
-      if (!parsed) {
-        errors.push(`${entry.id}: unparseable response`)
-        continue
-      }
-      const merged: CachedEnrichment = { ...enrichments[entry.id] }
-      merged.summary = parsed.summary
-      merged.qualityScore = parsed.quality_score
-      merged.qualityTier = getQualityScoreTier(parsed.quality_score)
-      merged.selected = deriveSelected({ qualityScore: parsed.quality_score })
-      const contentTypes: Record<string, number> = {}
-      for (const [key, value] of Object.entries(parsed.content_types)) {
-        if (typeof value === "number") contentTypes[key] = value
-      }
-      merged.qualityDetails = {
-        contentTypes,
-        scores: parsed.scores,
-        positiveReasons: parsed.positive_reasons,
-        negativeReasons: parsed.negative_reasons,
-        confidence: parsed.confidence,
-        summary: parsed.summary,
-      }
-      // Surface the strongest positive reason as the recommendation rationale.
-      if (parsed.positive_reasons[0]) merged.recommendationReason = parsed.positive_reasons[0]
       enrichments[entry.id] = merged
 
-      // Step 2: only entries that clear the public score gate get a rich summary
-      // (and, if configured, a local embedding). Entries that won't be shown keep
-      // the cheap one-sentence summary from step 1, saving tokens.
+      // Step 2: only entries that clear the public score gate get a rich summary,
+      // a Chinese translation (for non-Chinese content), and — if configured — a
+      // local embedding. Entries that won't be shown keep the cheap fallback
+      // summary from step 1, saving tokens.
       if (passesScoreGateServer(entry, enrichments, manifest)) {
-        const rich = await generateRichSummary(apiURL, apiKey, model, source)
-        if (rich) {
-          merged.summary = rich
-          if (merged.qualityDetails) merged.qualityDetails.summary = rich
+        if (needsScore) {
+          const rich = await generateRichSummary(apiURL, apiKey, model, source)
+          if (rich) {
+            merged.summary = rich
+            if (merged.qualityDetails) merged.qualityDetails.summary = rich
+          }
+          if (EMBEDDING_BASE_URL && !merged.embedding?.length) {
+            const embedText = [titleText, rich || fallbackSummary, textContent]
+              .filter(Boolean)
+              .join("\n")
+            const vec = await generateServerEmbedding(embedText)
+            if (vec) merged.embedding = vec
+          }
         }
-        if (EMBEDDING_BASE_URL && !merged.embedding?.length) {
-          const embedText = [titleText, rich || parsed.summary, textContent]
-            .filter(Boolean)
-            .join("\n")
-          const vec = await generateServerEmbedding(embedText)
-          if (vec) merged.embedding = vec
+        // Translate non-Chinese entries (mainly English X/Twitter) into Chinese so
+        // the detail page's 翻译标题/翻译内容 sections can render.
+        if (needsForeignTranslation(entry, merged)) {
+          const tr = await generateTranslation(apiURL, apiKey, model, titleText, textContent)
+          if (tr)
+            merged.translation = { ...merged.translation, title: tr.title, content: tr.content }
         }
         enrichments[entry.id] = merged
       }
