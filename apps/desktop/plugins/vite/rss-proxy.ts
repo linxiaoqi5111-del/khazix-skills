@@ -175,6 +175,8 @@ function ensureCacheDir(rootDir: string) {
 const RSSHUB_BASE_URL = (process.env.RSSHUB_BASE_URL || "http://localhost:1200").replace(/\/+$/, "")
 const WATCHLIST_FETCH_CONCURRENCY = 5
 const WATCHLIST_FETCH_TIMEOUT_MS = 15_000
+// Guest weibo API spacing (ms). Mirrors finhot Python WEIBO_SLEEP; lower default for dev refresh.
+const WEIBO_SLEEP_MS = Number(process.env.WEIBO_SLEEP_MS ?? "2000")
 // Scheduler runs in Beijing time (Asia/Shanghai, fixed UTC+8, no DST).
 const SCHEDULE_TIMEZONE = "Asia/Shanghai"
 const SCHEDULE_TICK_MS = 30 * 1000
@@ -254,9 +256,10 @@ interface WatchlistImportJob {
   url: string
   category: string
   // "rss": fetch + parse as RSS/Atom XML.
+  // "weibo": m.weibo.cn guest API (genvisitor2 cookie, no login required).
   // "xueqiu": scrape via headful Playwright (bypasses Aliyun WAF, no cookie needed).
   // "twitter": fetch via Nitter/RSSHub (fetchTwitterFeedViaRss).
-  kind: "rss" | "xueqiu" | "twitter"
+  kind: "rss" | "weibo" | "xueqiu" | "twitter"
   // Source-specific identifier (e.g. xueqiu user id) for non-RSS kinds.
   ref?: string
 }
@@ -285,7 +288,7 @@ function loadWatchlist(): WatchlistData {
 }
 
 // Build the list of feeds to import from the watchlist.
-//  - weibo: local RSSHub (RSSHUB_BASE_URL) with WEIBO_COOKIES configured.
+//  - weibo: m.weibo.cn guest API (genvisitor2); no RSSHub / login cookie needed.
 //  - xueqiu: scraped via headful Playwright (xueqiu-scraper.mjs); bypasses the
 //    Aliyun WAF and needs no cookie, so it does NOT go through RSSHub.
 //  - wechat ({ name, url }): fetched directly as-is.
@@ -301,7 +304,7 @@ function loadWatchlist(): WatchlistData {
 function buildWatchlistImportJobs(data: WatchlistData): WatchlistImportJob[] {
   const jobs: WatchlistImportJob[] = []
   for (const uid of data.weibo ?? []) {
-    jobs.push({ url: `${RSSHUB_BASE_URL}/weibo/user/${uid}`, category: "微博", kind: "rss" })
+    jobs.push({ url: `finhot://weibo/${uid}`, category: "微博", kind: "weibo", ref: uid })
   }
   for (const id of data.xueqiu ?? []) {
     jobs.push({ url: `finhot://xueqiu/${id}`, category: "雪球", kind: "xueqiu", ref: id })
@@ -376,6 +379,15 @@ async function runWatchlistImportJob(job: WatchlistImportJob): Promise<{
   feed: ReturnType<typeof parseRssFeed>["feed"]
   entries: ReturnType<typeof parseRssFeed>["entries"]
 } | null> {
+  if (job.kind === "weibo" && job.ref) {
+    try {
+      const { mblogs, screenName } = await fetchWeiboTimeline(job.ref)
+      return weiboTimelineToFeed(job.ref, screenName, mblogs, RSS_ENTRY_LIMIT)
+    } catch (error: unknown) {
+      if (error instanceof WeiboRateLimited) throw error
+      return null
+    }
+  }
   if (job.kind === "xueqiu" && job.ref) {
     try {
       const { statuses, screenName } = await fetchXueqiuTimeline(job.ref)
@@ -398,8 +410,29 @@ async function autoImportWatchlistFeeds(categories?: WatchlistCategory[]): Promi
   if (jobs.length === 0) return 0
 
   let imported = 0
-  for (let i = 0; i < jobs.length; i += WATCHLIST_FETCH_CONCURRENCY) {
-    const batch = jobs.slice(i, i + WATCHLIST_FETCH_CONCURRENCY)
+  const weiboJobs = jobs.filter((job) => job.kind === "weibo")
+  const otherJobs = jobs.filter((job) => job.kind !== "weibo")
+
+  for (const job of weiboJobs) {
+    try {
+      const result = await runWatchlistImportJob(job)
+      if (result) {
+        cacheFeedResult(result.feed, result.entries, job.category)
+        imported++
+      }
+    } catch (error: unknown) {
+      if (error instanceof WeiboRateLimited) {
+        console.warn(`[FinHot] ${error.message}`)
+        break
+      }
+    }
+    if (WEIBO_SLEEP_MS > 0) {
+      await new Promise((resolve) => setTimeout(resolve, WEIBO_SLEEP_MS))
+    }
+  }
+
+  for (let i = 0; i < otherJobs.length; i += WATCHLIST_FETCH_CONCURRENCY) {
+    const batch = otherJobs.slice(i, i + WATCHLIST_FETCH_CONCURRENCY)
     const results = await Promise.allSettled(
       batch.map(async (job) => ({ job, result: await runWatchlistImportJob(job) })),
     )
@@ -1907,6 +1940,144 @@ function resolveXueqiuUserId(url: string): string | null {
   }
 
   return null
+}
+
+class WeiboRateLimited extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = "WeiboRateLimited"
+  }
+}
+
+let weiboGuestCookie: string | null = null
+
+async function renewWeiboGuestCookie(): Promise<string> {
+  const res = await fetch("https://visitor.passport.weibo.cn/visitor/genvisitor2", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "User-Agent": "FinHot/0.1.4 (RSS Reader)",
+    },
+    body: "cb=visitor_gray_callback&tid=&from=weibo",
+  })
+  const text = await res.text()
+  const match = /visitor_gray_callback\((.*)\)/s.exec(text)
+  if (!match) throw new Error("weibo genvisitor2 parse failed")
+  const data = JSON.parse(match[1]!).data as { sub: string; subp: string }
+  weiboGuestCookie = `SUB=${data.sub}; SUBP=${data.subp};`
+  return weiboGuestCookie
+}
+
+async function weiboGuestCookieValue(): Promise<string> {
+  if (weiboGuestCookie) return weiboGuestCookie
+  const fromEnv = process.env.WEIBO_COOKIE?.trim()
+  if (fromEnv) {
+    weiboGuestCookie = fromEnv
+    return fromEnv
+  }
+  return renewWeiboGuestCookie()
+}
+
+function collectWeiboMblogs(cards: any[]): any[] {
+  const out: any[] = []
+  for (const card of cards) {
+    if (card.mblog) out.push(card.mblog)
+    for (const group of card.card_group ?? []) {
+      if (group.mblog) out.push(group.mblog)
+    }
+  }
+  return out
+}
+
+async function weiboContainerApi(uid: string, cookie: string): Promise<any> {
+  const containerid = `107603${uid}`
+  const url = `https://m.weibo.cn/api/container/getIndex?type=uid&value=${uid}&containerid=${encodeURIComponent(containerid)}`
+  const res = await fetch(url, {
+    headers: {
+      "User-Agent": "FinHot/0.1.4 (RSS Reader)",
+      Cookie: cookie,
+      Referer: `https://m.weibo.cn/u/${uid}`,
+    },
+    signal: AbortSignal.timeout(WATCHLIST_FETCH_TIMEOUT_MS),
+  })
+  return res.json()
+}
+
+async function fetchWeiboTimeline(uid: string): Promise<{ mblogs: any[]; screenName: string }> {
+  let data = await weiboContainerApi(uid, await weiboGuestCookieValue())
+  if (data.ok !== 1) {
+    data = await weiboContainerApi(uid, await renewWeiboGuestCookie())
+  }
+  if (data.ok === -100) {
+    throw new WeiboRateLimited("weibo api ok=-100 (IP 频控，跳过本轮剩余微博)")
+  }
+  if (data.ok !== 1) {
+    throw new Error(`weibo api ok=${data.ok}`)
+  }
+  const mblogs = collectWeiboMblogs(data.data?.cards ?? [])
+  const screenName = data.data?.userInfo?.screen_name ?? mblogs[0]?.user?.screen_name ?? uid
+  return { mblogs, screenName }
+}
+
+function weiboTimelineToFeed(uid: string, screenName: string, mblogs: any[], limit: number) {
+  const feedUrl = `finhot://weibo/${uid}`
+  const feedId = generateId(feedUrl)
+
+  const feed = {
+    id: feedId,
+    title: `${screenName}的微博`,
+    url: feedUrl,
+    description: `微博用户 ${screenName} 的动态`,
+    image: null,
+    errorAt: null,
+    siteUrl: `https://weibo.com/u/${uid}`,
+    ownerUserId: null,
+    errorMessage: null,
+    subscriptionCount: null,
+    updatesPerWeek: null,
+    latestEntryPublishedAt: null,
+    tipUserIds: null as string[] | null,
+    updatedAt: new Date().toISOString(),
+  }
+
+  const entries = mblogs.slice(0, limit).map((blog: any) => {
+    const text = stripHtml(blog.text ?? "")
+    const publishedAt = blog.created_at
+      ? new Date(blog.created_at).toISOString()
+      : new Date().toISOString()
+    const link = `https://m.weibo.cn/detail/${blog.id}`
+    const entryId = generateId(`${feedUrl}::${blog.id}`)
+    const author = blog.user?.screen_name ?? screenName
+
+    return {
+      id: entryId,
+      title: text.slice(0, 80) || null,
+      url: link,
+      content: stripHtmlNL(blog.text ?? ""),
+      readabilityContent: null,
+      readabilityUpdatedAt: null,
+      description: text.slice(0, 300) || null,
+      guid: String(blog.id),
+      author,
+      authorUrl: `https://weibo.com/u/${uid}`,
+      authorAvatar: blog.user?.profile_image_url ?? null,
+      insertedAt: new Date().toISOString(),
+      publishedAt,
+      media: null,
+      categories: null,
+      attachments: null,
+      extra: null,
+      language: "zh-CN",
+      feedId,
+      inboxHandle: null,
+    }
+  })
+
+  if (entries.length > 0) {
+    feed.latestEntryPublishedAt = entries[0]!.publishedAt
+  }
+
+  return { feed, entries }
 }
 
 async function fetchXueqiuTimeline(
@@ -3749,7 +3920,10 @@ function buildItemDetailHtml(
 
   const pubDate = entry.publishedAt ? new Date(entry.publishedAt).toLocaleString("zh-CN") : ""
   const contentSource = entry.content || entry.description || ""
-  const contentDuplicatesTitle = isSubstantiallyDuplicateText(entry.title, contentSource)
+  const isWeiboFeed = feed ? detectPlatform(feed.url, feed.category) === "weibo" : false
+  const contentDuplicatesTitle = isWeiboFeed
+    ? false
+    : isSubstantiallyDuplicateText(entry.title, contentSource)
   const contentHtml = contentDuplicatesTitle ? "" : sanitizeDetailHtml(contentSource)
 
   return `<!DOCTYPE html>
@@ -4100,10 +4274,11 @@ function renderDetail(entryId){
   var reason=recReason(en);
   var tr=en.translation||{};var translatedBody=translationText(en);
   var score=scoreVal(en);var sl=selLabel(en);
+  var rawBody=stripNL(e.content||e.description||"").replace(/[ \\t\\r]+/g," ").trim();
   var bodyText=strip(e.content||e.description||"").replace(/\\s+/g," ").trim();
   var titleText=String(e.title||"(\u65E0\u6807\u9898)").trim();
   var isLongTitle=plain(titleText).length>90;
-  var source=sourceBody(titleText,bodyText);
+  var source=(p==="weibo")?{text:rawBody,note:""}:sourceBody(titleText,bodyText);
   var h='<div class="detail-header">';
   h+='<button class="detail-close-btn" id="detail-close" title="\u5173\u95ED"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg></button>';
   h+='<span class="detail-header-title">'+esc(titleText)+"</span>";

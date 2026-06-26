@@ -2,6 +2,33 @@
 
 This file provides concise, agent-focused guidance for working in this monorepo. It consolidates the repository's CLAUDE.md guides, .cursor rules, Cursor rules improvements, and modern agent best practices.
 
+## Git branch safety (mandatory)
+
+`main` is the shared baseline. **Every code/config change must start on a task branch** — never edit `main` directly.
+
+At session start, report:
+
+```bash
+git status --short
+git branch --show-current
+```
+
+Workflow:
+
+1. `git checkout main` → `git pull` → `git checkout -b <type>/<short-task>`
+2. Work → commit → push branch
+3. Merge to `main` only after user explicitly confirms
+
+Branch naming: `fix/<issue>`, `feature/<name>`, `data-source/<name>`, `theme-radar/<name>`.
+
+Do **not** commit on `main` for: rss-proxy / public reader changes, watchlist pipeline, deploy scripts, DuckDB or cache logic, or any multi-file feature work.
+
+Small doc-only typo fixes on `main` are OK if zero runtime risk.
+
+Before commit, never stage: `.env*`, `*.pdf`, `*.duckdb`, `*.db`, `.finhot-cache/`, `node_modules/`, credentials.
+
+Canonical local path: **`~/finhot`** (single repo; do not duplicate under `~/Desktop/finhot` or `~/khazix-skills`).
+
 ## Project overview
 
 - Desktop-focused monorepo managed by pnpm workspaces + Turbo.
