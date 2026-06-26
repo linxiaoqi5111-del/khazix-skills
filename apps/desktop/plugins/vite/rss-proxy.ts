@@ -24,6 +24,12 @@ import type { PluginOption } from "vite"
 
 const RSS_FETCH_TIMEOUT_MS = 30_000
 const RSS_ENTRY_LIMIT = 30
+// Cloudflare Pages auto-deploy resiliency: a single wrangler upload sometimes
+// times out (ETIMEDOUT) when CF is slow, silently dropping the scheduled deploy.
+// Retry a few times with linear backoff and a longer per-attempt timeout.
+const DEPLOY_MAX_ATTEMPTS = 3
+const DEPLOY_TIMEOUT_MS = 180_000
+const DEPLOY_RETRY_BASE_MS = 5_000
 const JINA_READER_BASE = "https://r.jina.ai/"
 const DEFUDDLE_BASE = "https://defuddle.md/"
 const PUBLIC_SITE_BASE =
@@ -333,12 +339,34 @@ async function fetchAndParseFeed(url: string): Promise<{
       },
     })
     clearTimeout(timer)
-    if (!res.ok) return null
+    if (!res.ok) {
+      // Surface actionable upstream failures — otherwise the feed silently
+      // stales (the manifest keeps its old updatedAt and only the external
+      // monitor notices). The most common one is an expired RSSHub weibo
+      // login cookie, which returns a 503 HTML page mentioning WEIBO_COOKIES.
+      let hint = `HTTP ${res.status}`
+      try {
+        const body = await res.text()
+        if (/WEIBO_COOKIES|Cookies?\s+expired/i.test(body)) {
+          hint =
+            "RSSHub WEIBO_COOKIES expired — refresh the weibo login cookie and recreate the rsshub container"
+        }
+      } catch {
+        /* ignore body read errors */
+      }
+      console.warn(`[FinHot] feed fetch failed: ${url} — ${hint}`)
+      return null
+    }
     const xml = await res.text()
-    if (!xml.includes("<rss") && !xml.includes("<feed") && !xml.includes("<?xml")) return null
+    if (!xml.includes("<rss") && !xml.includes("<feed") && !xml.includes("<?xml")) {
+      console.warn(`[FinHot] feed fetch returned non-feed content: ${url}`)
+      return null
+    }
     return parseRssFeed(xml, url, RSS_ENTRY_LIMIT)
-  } catch {
+  } catch (error: unknown) {
     clearTimeout(timer)
+    const message = error instanceof Error ? error.message : String(error)
+    console.warn(`[FinHot] feed fetch error: ${url} — ${message}`)
     return null
   }
 }
@@ -3402,18 +3430,41 @@ export function rssProxyPlugin(): PluginOption {
         if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true })
         writeFileSync(join(tmpDir, "index.html"), html, "utf-8")
 
-        const wranglerResult = execSync(
-          `npx wrangler pages deploy "${tmpDir}" --project-name finhot --branch main --commit-dirty=true`,
-          {
-            env: {
-              ...process.env,
-              CLOUDFLARE_API_TOKEN: cfApiToken,
-              CLOUDFLARE_ACCOUNT_ID: cfAccountId,
-            },
-            timeout: 120_000,
-            encoding: "utf-8",
-          },
-        )
+        // The wrangler upload occasionally times out or hits a transient network
+        // error (ETIMEDOUT/ECONNRESET/socket hang up) when Cloudflare is slow.
+        // Retry a few times with backoff and a longer per-attempt timeout so a
+        // single flaky upload no longer silently drops the scheduled deploy.
+        let wranglerResult = ""
+        let lastError: unknown
+        for (let attempt = 1; attempt <= DEPLOY_MAX_ATTEMPTS; attempt++) {
+          try {
+            wranglerResult = execSync(
+              `npx wrangler pages deploy "${tmpDir}" --project-name finhot --branch main --commit-dirty=true`,
+              {
+                env: {
+                  ...process.env,
+                  CLOUDFLARE_API_TOKEN: cfApiToken,
+                  CLOUDFLARE_ACCOUNT_ID: cfAccountId,
+                },
+                timeout: DEPLOY_TIMEOUT_MS,
+                encoding: "utf-8",
+              },
+            )
+            break
+          } catch (error: unknown) {
+            lastError = error
+            if (attempt >= DEPLOY_MAX_ATTEMPTS) break
+            const message = error instanceof Error ? error.message : String(error)
+            const delayMs = DEPLOY_RETRY_BASE_MS * attempt
+            console.warn(
+              `[FinHot] wrangler deploy attempt ${attempt}/${DEPLOY_MAX_ATTEMPTS} failed: ${message} — retrying in ${delayMs}ms`,
+            )
+            execSync(`sleep ${Math.round(delayMs / 1000)}`)
+          }
+        }
+        if (!wranglerResult) {
+          throw lastError instanceof Error ? lastError : new Error("wrangler deploy failed")
+        }
         const urlMatch = wranglerResult.match(/https:\/\/[a-z0-9]+\.finhot\.pages\.dev/)
         return urlMatch?.[0] ?? "https://finhot.industry7view.com"
       }
