@@ -57,6 +57,17 @@ const ENRICH_PER_FEED_LIMIT = 5 // 每 feed 最多处理最近 N 条需要 AI �
 const EMBEDDING_BASE_URL = (process.env.FINHOT_EMBEDDING_BASE_URL || "").replace(/\/+$/, "")
 const EMBEDDING_MODEL = process.env.FINHOT_EMBEDDING_MODEL || "bge-m3"
 
+// ─── Feed-suggestion notifications + read-back ───
+// When set, each accepted feed suggestion fires a Server酱 (ServerChan) push to
+// WeChat. Holds the ServerChan SendKey (Turbo "SCT…" or v3 "sctp…").
+const FEED_SUGGESTION_SERVERCHAN = (process.env.FEED_SUGGESTION_SERVERCHAN || "").trim()
+// Token gating the read-only GET /api/public/feed-suggestions endpoint. Empty = endpoint disabled.
+const FEED_SUGGESTION_TOKEN = (process.env.FEED_SUGGESTION_TOKEN || "").trim()
+// Absolute origin the deployed public page should POST feed suggestions to (e.g.
+// a tunnel that reaches this dev server). Empty = same-origin, used in dev or
+// when the dev server serves the page directly.
+const FEED_SUGGESTION_PUBLIC_API_BASE = (process.env.FEED_SUGGESTION_PUBLIC_API_BASE || "").trim()
+
 const DETAIL_ALLOWED_TAGS = new Set([
   "a",
   "blockquote",
@@ -1900,6 +1911,39 @@ async function resolveWechatBizId(name: string): Promise<ResolvedAccount | null>
   return Promise.race([search, deadline])
 }
 
+/** Fire-and-forget Server酱 (ServerChan) push for a new feed suggestion. Never throws. */
+async function pushFeedSuggestionServerChan(s: {
+  id: string
+  platform: string
+  at: string
+}): Promise<void> {
+  const key = FEED_SUGGESTION_SERVERCHAN
+  if (!key) return
+  // v3 SendKeys ("sctp<id>t...") push to a per-key host; Turbo keys ("SCT...") use sctapi.ftqq.com.
+  const host = key.startsWith("sctp")
+    ? `https://${(key.match(/^sctp\d+/) ?? ["sctapi"])[0]}.push.ft07.com`
+    : "https://sctapi.ftqq.com"
+  const url = `${host}/${key}.send`
+  const title = "FinHot 新投稿"
+  const desp = `平台：${s.platform || "未填"}\nID/链接：${s.id}\n时间：${s.at}`
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 8000)
+  try {
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ title, desp }).toString(),
+      signal: controller.signal,
+    })
+  } catch (error: unknown) {
+    console.warn(
+      `[FinHot] ServerChan push failed: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** CORS preflight helper */
 function handleCors(req: any, res: any): boolean {
   if (req.method === "OPTIONS") {
@@ -3100,8 +3144,60 @@ export function rssProxyPlugin(): PluginOption {
           }
           list.push(suggestion)
           writeFileSync(file, JSON.stringify(list, null, 2))
-          res.writeHead(200, { "Content-Type": "application/json" })
+          void pushFeedSuggestionServerChan(suggestion)
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+          })
           res.end(JSON.stringify({ ok: true }))
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "Unknown error"
+          res.writeHead(500, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: message }))
+        }
+      })
+
+      // ─── /api/public/feed-suggestions — token-gated read of submitted suggestions ───
+      server.middlewares.use("/api/public/feed-suggestions", async (req, res) => {
+        if (handleCors(req, res)) return
+        if (req.method !== "GET") {
+          res.writeHead(405, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: "Method not allowed" }))
+          return
+        }
+        if (!FEED_SUGGESTION_TOKEN) {
+          res.writeHead(404, {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+          })
+          res.end(JSON.stringify({ error: "Not found" }))
+          return
+        }
+        const parsedUrl = new URL(req.url ?? "/", "http://localhost")
+        const token = parsedUrl.searchParams.get("token") ?? ""
+        if (token !== FEED_SUGGESTION_TOKEN) {
+          res.writeHead(401, {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+          })
+          res.end(JSON.stringify({ error: "Unauthorized" }))
+          return
+        }
+        try {
+          const file = join(cacheDir, "feed-suggestions.json")
+          let list: unknown[] = []
+          if (existsSync(file)) {
+            const existing = JSON.parse(readFileSync(file, "utf-8"))
+            if (Array.isArray(existing)) list = existing
+          }
+          // Newest first for quick triage.
+          const suggestions = [...list].reverse()
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+            "Access-Control-Allow-Origin": "*",
+          })
+          res.end(JSON.stringify({ count: suggestions.length, suggestions }))
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : "Unknown error"
           res.writeHead(500, { "Content-Type": "application/json" })
@@ -4682,7 +4778,7 @@ function submitFeedSuggestion(){
     platform:(((document.getElementById("fp-fs-platform")||{}).value)||"").trim()
   };
   btn.disabled=true;msg.className="fp-form-msg";msg.textContent="\u63D0\u4EA4\u4E2D\u2026";
-  fetch("/api/public/feed-suggestion",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})
+  fetch(${JSON.stringify(FEED_SUGGESTION_PUBLIC_API_BASE)}+"/api/public/feed-suggestion",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)})
     .then(function(r){if(!r.ok)throw new Error("bad status");return r.json()})
     .then(function(){msg.className="fp-form-msg ok";msg.textContent="\u6536\u5230\uFF0C\u8C22\u8C22\u4F60\u7684\u6295\u7A3F\uFF01\u6211\u4EEC\u4F1A\u5C3D\u5FEB\u5BA1\u6838\u3002";if(idEl)idEl.value=""})
     .catch(function(){
