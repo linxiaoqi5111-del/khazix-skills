@@ -53,6 +53,13 @@ const ENRICH_PER_FEED_LIMIT = 5 // 每 feed 最多处理最近 N 条需要 AI �
 const EMBEDDING_BASE_URL = (process.env.FINHOT_EMBEDDING_BASE_URL || "").replace(/\/+$/, "")
 const EMBEDDING_MODEL = process.env.FINHOT_EMBEDDING_MODEL || "bge-m3"
 
+// ─── Feed-suggestion notifications + read-back ───
+// When set, each accepted feed suggestion fires a Bark push (https://bark.day.app).
+// Accepts a full base ("https://api.day.app/<key>") or just the device key.
+const FEED_SUGGESTION_BARK = (process.env.FEED_SUGGESTION_BARK || "").trim()
+// Token gating the read-only GET /api/public/feed-suggestions endpoint. Empty = endpoint disabled.
+const FEED_SUGGESTION_TOKEN = (process.env.FEED_SUGGESTION_TOKEN || "").trim()
+
 const DETAIL_ALLOWED_TAGS = new Set([
   "a",
   "blockquote",
@@ -1896,6 +1903,32 @@ async function resolveWechatBizId(name: string): Promise<ResolvedAccount | null>
   return Promise.race([search, deadline])
 }
 
+/** Fire-and-forget Bark push for a new feed suggestion. Never throws. */
+async function pushFeedSuggestionBark(s: {
+  id: string
+  platform: string
+  at: string
+}): Promise<void> {
+  if (!FEED_SUGGESTION_BARK) return
+  const base = /^https?:\/\//.test(FEED_SUGGESTION_BARK)
+    ? FEED_SUGGESTION_BARK.replace(/\/+$/, "")
+    : `https://api.day.app/${FEED_SUGGESTION_BARK}`
+  const title = "FinHot 新投稿"
+  const body = `${s.platform || "未填平台"}：${s.id}`
+  const url = `${base}/${encodeURIComponent(title)}/${encodeURIComponent(body)}?group=FinHot&isArchive=1`
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 8000)
+  try {
+    await fetch(url, { signal: controller.signal })
+  } catch (error: unknown) {
+    console.warn(
+      `[FinHot] Bark push failed: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /** CORS preflight helper */
 function handleCors(req: any, res: any): boolean {
   if (req.method === "OPTIONS") {
@@ -3096,8 +3129,50 @@ export function rssProxyPlugin(): PluginOption {
           }
           list.push(suggestion)
           writeFileSync(file, JSON.stringify(list, null, 2))
+          void pushFeedSuggestionBark(suggestion)
           res.writeHead(200, { "Content-Type": "application/json" })
           res.end(JSON.stringify({ ok: true }))
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "Unknown error"
+          res.writeHead(500, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: message }))
+        }
+      })
+
+      // ─── /api/public/feed-suggestions — token-gated read of submitted suggestions ───
+      server.middlewares.use("/api/public/feed-suggestions", async (req, res) => {
+        if (handleCors(req, res)) return
+        if (req.method !== "GET") {
+          res.writeHead(405, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: "Method not allowed" }))
+          return
+        }
+        if (!FEED_SUGGESTION_TOKEN) {
+          res.writeHead(404, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: "Not found" }))
+          return
+        }
+        const parsedUrl = new URL(req.url ?? "/", "http://localhost")
+        const token = parsedUrl.searchParams.get("token") ?? ""
+        if (token !== FEED_SUGGESTION_TOKEN) {
+          res.writeHead(401, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: "Unauthorized" }))
+          return
+        }
+        try {
+          const file = join(cacheDir, "feed-suggestions.json")
+          let list: unknown[] = []
+          if (existsSync(file)) {
+            const existing = JSON.parse(readFileSync(file, "utf-8"))
+            if (Array.isArray(existing)) list = existing
+          }
+          // Newest first for quick triage.
+          const suggestions = [...list].reverse()
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Cache-Control": "no-store",
+          })
+          res.end(JSON.stringify({ count: suggestions.length, suggestions }))
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : "Unknown error"
           res.writeHead(500, { "Content-Type": "application/json" })
