@@ -54,9 +54,9 @@ const EMBEDDING_BASE_URL = (process.env.FINHOT_EMBEDDING_BASE_URL || "").replace
 const EMBEDDING_MODEL = process.env.FINHOT_EMBEDDING_MODEL || "bge-m3"
 
 // ─── Feed-suggestion notifications + read-back ───
-// When set, each accepted feed suggestion fires a Bark push (https://bark.day.app).
-// Accepts a full base ("https://api.day.app/<key>") or just the device key.
-const FEED_SUGGESTION_BARK = (process.env.FEED_SUGGESTION_BARK || "").trim()
+// When set, each accepted feed suggestion fires a Server酱 (ServerChan) push to
+// WeChat. Holds the ServerChan SendKey (Turbo "SCT…" or v3 "sctp…").
+const FEED_SUGGESTION_SERVERCHAN = (process.env.FEED_SUGGESTION_SERVERCHAN || "").trim()
 // Token gating the read-only GET /api/public/feed-suggestions endpoint. Empty = endpoint disabled.
 const FEED_SUGGESTION_TOKEN = (process.env.FEED_SUGGESTION_TOKEN || "").trim()
 
@@ -1903,26 +1903,33 @@ async function resolveWechatBizId(name: string): Promise<ResolvedAccount | null>
   return Promise.race([search, deadline])
 }
 
-/** Fire-and-forget Bark push for a new feed suggestion. Never throws. */
-async function pushFeedSuggestionBark(s: {
+/** Fire-and-forget Server酱 (ServerChan) push for a new feed suggestion. Never throws. */
+async function pushFeedSuggestionServerChan(s: {
   id: string
   platform: string
   at: string
 }): Promise<void> {
-  if (!FEED_SUGGESTION_BARK) return
-  const base = /^https?:\/\//.test(FEED_SUGGESTION_BARK)
-    ? FEED_SUGGESTION_BARK.replace(/\/+$/, "")
-    : `https://api.day.app/${FEED_SUGGESTION_BARK}`
+  const key = FEED_SUGGESTION_SERVERCHAN
+  if (!key) return
+  // v3 SendKeys ("sctp<id>t...") push to a per-key host; Turbo keys ("SCT...") use sctapi.ftqq.com.
+  const host = key.startsWith("sctp")
+    ? `https://${(key.match(/^sctp\d+/) ?? ["sctapi"])[0]}.push.ft07.com`
+    : "https://sctapi.ftqq.com"
+  const url = `${host}/${key}.send`
   const title = "FinHot 新投稿"
-  const body = `${s.platform || "未填平台"}：${s.id}`
-  const url = `${base}/${encodeURIComponent(title)}/${encodeURIComponent(body)}?group=FinHot&isArchive=1`
+  const desp = `平台：${s.platform || "未填"}\nID/链接：${s.id}\n时间：${s.at}`
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), 8000)
   try {
-    await fetch(url, { signal: controller.signal })
+    await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ title, desp }).toString(),
+      signal: controller.signal,
+    })
   } catch (error: unknown) {
     console.warn(
-      `[FinHot] Bark push failed: ${error instanceof Error ? error.message : String(error)}`,
+      `[FinHot] ServerChan push failed: ${error instanceof Error ? error.message : String(error)}`,
     )
   } finally {
     clearTimeout(timer)
@@ -3129,7 +3136,7 @@ export function rssProxyPlugin(): PluginOption {
           }
           list.push(suggestion)
           writeFileSync(file, JSON.stringify(list, null, 2))
-          void pushFeedSuggestionBark(suggestion)
+          void pushFeedSuggestionServerChan(suggestion)
           res.writeHead(200, { "Content-Type": "application/json" })
           res.end(JSON.stringify({ ok: true }))
         } catch (error: unknown) {
