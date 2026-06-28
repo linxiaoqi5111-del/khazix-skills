@@ -179,7 +179,6 @@ These classes map to the UIKit color variables (see `.cursor rules/color` and `a
 ## Quick checklists
 
 - Implementation
-
   - [ ] Is code placed in the right package/app?
   - [ ] Type-safe (no `any`), readable names, English comments where needed.
   - [ ] Uses correct UIKit Tailwind tokens and icon sources.
