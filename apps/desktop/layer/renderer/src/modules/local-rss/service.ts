@@ -386,25 +386,18 @@ export async function refreshLocalRssFeed(
   await entryActions.upsertMany(actionResult.entries)
   const ingestedEntryIds = actionResult.entries.map((entry) => entry.id)
 
-  // Entries matched by a "skip AI enrichment" action rule are still ingested and
-  // displayed, but excluded from BYOK enrichment. Rank scoring is a local heuristic
-  // (recency + any existing signals) and stays on, so ordering is unaffected.
-  const skipEnrichmentIds = new Set(
-    actionResult.sideEffects
-      .filter((effect) => effect.skipEnrichment)
-      .map((effect) => effect.entry.id),
-  )
-  const enrichableEntryIds = ingestedEntryIds.filter((id) => !skipEnrichmentIds.has(id))
-
+  // Entries matched by a "skip AI enrichment" action rule are still ingested and displayed,
+  // but excluded from BYOK enrichment. That gate lives in triggerEntryEnrichment* (single
+  // source of truth covering ingest, refetch, and backfill). Rank scoring is a local
+  // heuristic and stays on, so ordering is unaffected.
   if (isInitialSubscription && initialUnreadIds) {
     // Only enrich the newest entries that are kept unread; skip AI for the entire backlog.
-    const enrichIds = enrichableEntryIds.filter((id) => initialUnreadIds!.has(id))
+    const enrichIds = ingestedEntryIds.filter((id) => initialUnreadIds!.has(id))
     triggerEntryEnrichmentFromIngest(enrichIds)
-    triggerEntryRankFromIngest(ingestedEntryIds)
   } else {
-    triggerEntryEnrichmentFromIngest(enrichableEntryIds)
-    triggerEntryRankFromIngest(ingestedEntryIds)
+    triggerEntryEnrichmentFromIngest(ingestedEntryIds)
   }
+  triggerEntryRankFromIngest(ingestedEntryIds)
   void Promise.all(
     actionResult.sideEffects.map((result) =>
       runLocalActionSideEffects(result, {
