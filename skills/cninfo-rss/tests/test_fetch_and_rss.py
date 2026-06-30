@@ -96,6 +96,93 @@ class TestClassify(unittest.TestCase):
         self.assertIsNone(fc.classify(self._rec("关于公司地址变更的公告"), self.cfg))
 
 
+class TestCategoryTitleGate(unittest.TestCase):
+    """分类命中后的标题二次校验（粗筛 → 准入门）。"""
+
+    def setUp(self):
+        self.cfg = {
+            "l3_categories": [
+                {
+                    "code": "category_gqbd_szsh",
+                    "name": "股权变动",
+                    "fact_types": ["share_change"],
+                    "enabled": True,
+                    "title_include_any": ["增持", "减持", "权益变动"],
+                },
+            ],
+            "l3_title_keywords": {"include_any": ["中标"], "exclude_any": ["董事会决议"]},
+            "low_confidence_keywords": [],
+            "fact_type_by_keyword": {"中标": "order_contract"},
+            "default_fact_type": "other_hard",
+        }
+
+    def _rec(self, title, cat="category_gqbd_szsh"):
+        return {"title": title, "sec_code": "300001", "sec_name": "测试",
+                "category_code": cat, "announcement_id": "1",
+                "published_at": "2026-06-30T08:00:00+08:00"}
+
+    def test_category_passes_title_gate(self):
+        out = fc.classify(self._rec("关于股东减持股份计划的公告"), self.cfg)
+        self.assertIsNotNone(out)
+        self.assertEqual(out["fact_type"], "share_change")
+        self.assertTrue(out["l3_match_reason"].startswith("category:"))
+
+    def test_category_blocked_by_title_gate(self):
+        # 命中分类码但标题没有任何准入词 → 不算分类命中，关键词也不中 → 丢弃
+        self.assertIsNone(fc.classify(self._rec("关于公司中介报告的说明"), self.cfg))
+
+    def test_category_title_exclude_drops(self):
+        cfg = dict(self.cfg)
+        cfg["l3_categories"] = [dict(cfg["l3_categories"][0], title_exclude_any=["质押"])]
+        self.assertIsNone(fc.classify(self._rec("关于股东减持及股份质押的公告"), cfg))
+
+
+class TestComboRules(unittest.TestCase):
+    """组合规则：宽词单独命中只算 review_candidate，配伴随词才升 hard_delta。"""
+
+    def setUp(self):
+        self.cfg = {
+            "l3_categories": [],
+            "l3_title_keywords": {"include_any": ["签订", "中标"], "exclude_any": []},
+            "low_confidence_keywords": [],
+            "fact_type_by_keyword": {"签订": "order_contract", "中标": "order_contract"},
+            "hard_delta_combo_rules": {"签订": ["合同", "订单", "协议"]},
+            "default_fact_type": "other_hard",
+        }
+
+    def _rec(self, title):
+        return {"title": title, "sec_code": "300001", "sec_name": "测试",
+                "category_code": "", "announcement_id": "1",
+                "published_at": "2026-06-30T08:00:00+08:00"}
+
+    def test_combo_satisfied_is_hard(self):
+        out = fc.classify(self._rec("关于签订重大合同的公告"), self.cfg)
+        self.assertEqual(out["update_type"], "hard_delta")
+        self.assertEqual(out["confidence"], "high")
+
+    def test_combo_missing_demotes(self):
+        out = fc.classify(self._rec("关于签订意向书的提示性公告"), self.cfg)
+        self.assertEqual(out["update_type"], "review_candidate")
+        self.assertEqual(out["confidence"], "low")
+        self.assertIn("combo_miss", out["l3_match_reason"])
+
+    def test_keyword_without_combo_rule_unaffected(self):
+        # 「中标」不在 combo_rules 里 → 不受约束，照常 hard_delta
+        out = fc.classify(self._rec("关于收到中标通知书的公告"), self.cfg)
+        self.assertEqual(out["update_type"], "hard_delta")
+
+    def test_prepublish_demoted(self):
+        # 预披露=未实施的减持计划：即使 减持+股份 组合满足，也因 low 词降级
+        cfg = dict(self.cfg)
+        cfg["l3_title_keywords"] = {"include_any": ["减持"], "exclude_any": []}
+        cfg["fact_type_by_keyword"] = {"减持": "share_change"}
+        cfg["hard_delta_combo_rules"] = {"减持": ["股份", "股东"]}
+        cfg["low_confidence_keywords"] = ["预披露"]
+        out = fc.classify(self._rec("关于股东减持股份预披露公告"), cfg)
+        self.assertEqual(out["update_type"], "review_candidate")
+        self.assertEqual(out["fact_status"], "planned")
+
+
 class TestDetailUrl(unittest.TestCase):
     def test_detail_url_has_stockcode_and_announcement_id(self):
         # 回归：巨潮详情页只给 annoId 会 500，必须同时带 stockCode + announcementId
@@ -148,6 +235,49 @@ class TestAtom(unittest.TestCase):
         self.assertNotIn("1782748800000", xml)
         # 特殊字符被正确转义
         self.assertIn("&amp;", xml)
+
+    def test_summary_localized_zh(self):
+        # whitebox feed 的 <summary> 应显示中文字段名+枚举，而非英文
+        recs = [{
+            "announcement_id": "9", "sec_code": "300001", "sec_name": "测试",
+            "title": "关于签订重大合同的公告", "published_at": "2026-06-30T08:00:00+08:00",
+            "pdf_url": "http://x/y.PDF", "detail_url": "https://x/d",
+            "category_code": "category_gqbd_szsh", "fact_type": "share_change",
+            "update_type": "review_candidate", "confidence": "low",
+            "l3_match_reason": "category:股权变动|combo_miss",
+        }]
+        xml = emit_rss.build_atom("t", "测试 feed", recs)
+        # 只校验用户可见的 <summary>（推荐理由展示位）；<category term> 保留英文稳定机器键
+        summary = minidom.parseString(xml).getElementsByTagName("summary")[0].firstChild.data
+        self.assertIn("事实类型：增减持", summary)
+        self.assertIn("判定：待核候选", summary)
+        self.assertIn("确定性：低", summary)
+        self.assertIn("分类:股权变动", summary)
+        self.assertIn("缺伴随词", summary)
+        # summary 内不应再出现英文枚举/字段名
+        for token in ("fact_type:", "update_type:", "hard_delta", "share_change", "combo_miss"):
+            self.assertNotIn(token, summary)
+
+
+class TestWriteFeeds(unittest.TestCase):
+    def test_stale_renamed_feed_removed(self):
+        # 改名后 write_feeds 应清掉残留旧文件，避免订阅端静默读陈旧 feed
+        import tempfile
+
+        rec = {
+            "announcement_id": "1", "sec_code": "300001", "sec_name": "测试",
+            "title": "关于签订重大合同的公告", "published_at": "2026-06-30T08:00:00+08:00",
+            "pdf_url": "", "detail_url": "", "category_code": "",
+            "fact_type": "order_contract", "update_type": "hard_delta",
+            "confidence": "high", "l3_match_reason": "keyword:签订",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            rss_dir = Path(d)
+            stale = rss_dir / "l3-hard-delta.xml"
+            stale.write_text("<old/>", encoding="utf-8")
+            emit_rss.write_feeds([rec], rss_dir, {"l3_categories": [], "watchlist_codes": []})
+            self.assertFalse(stale.exists())
+            self.assertTrue((rss_dir / "l3-candidates-hard-delta.xml").exists())
 
 
 if __name__ == "__main__":

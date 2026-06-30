@@ -16,9 +16,41 @@ from xml.sax.saxutils import escape
 
 ATOM_NS = "http://www.w3.org/2005/Atom"
 
+# 展示层中文映射：巨潮 feed 是 whitebox（跳过 AI 富集），<summary> 退回显示原始元数据。
+# 这里把英文枚举/字段名本地化成中文，纯 view 层、不碰召回/排序逻辑。
+_FACT_TYPE_ZH = {
+    "order_contract": "重大合同/订单",
+    "share_change": "增减持",
+    "earnings_flash": "业绩快报",
+    "earnings_guidance": "业绩预告",
+    "equity_incentive": "股权激励",
+    "dividend": "分红派息",
+    "other_hard": "其他硬事实",
+}
+_UPDATE_TYPE_ZH = {"hard_delta": "高确定性候选", "review_candidate": "待核候选"}
+_CONFIDENCE_ZH = {"high": "高", "low": "低"}
+_REASON_PREFIX_ZH = {"category": "分类", "keyword": "关键词", "low": "低确定词"}
+
 
 def _esc(text: str) -> str:
     return escape(text or "")
+
+
+def _match_reason_zh(reason: str) -> str:
+    """把 l3_match_reason 本地化：category:股权变动|combo_miss → 分类:股权变动｜缺伴随词。"""
+    if not reason or reason == "-":
+        return "-"
+    parts = []
+    for seg in reason.split("|"):
+        if seg == "combo_miss":
+            parts.append("缺伴随词")
+            continue
+        if ":" in seg:
+            pre, _, val = seg.partition(":")
+            parts.append(f"{_REASON_PREFIX_ZH.get(pre, pre)}:{val}")
+        else:
+            parts.append(seg)
+    return "｜".join(parts)
 
 
 def _entry_xml(rec: dict) -> str:
@@ -28,13 +60,16 @@ def _entry_xml(rec: dict) -> str:
     ann_id = rec.get("announcement_id", "")
     published = rec.get("published_at", "")
     detail_url = rec.get("detail_url", "")
+    fact_type = rec.get("fact_type", "")
+    update_type = rec.get("update_type", "")
+    confidence = rec.get("confidence", "")
     summary_lines = [
-        f"PDF: {rec.get('pdf_url', '')}",
-        f"category: {rec.get('category_code') or rec.get('announcement_type') or '-'}",
-        f"fact_type: {rec.get('fact_type', '-')}",
-        f"update_type: {rec.get('update_type', '-')}",
-        f"confidence: {rec.get('confidence', '-')}",
-        f"match: {rec.get('l3_match_reason', '-')}",
+        f"事实类型：{_FACT_TYPE_ZH.get(fact_type, fact_type or '-')}",
+        f"判定：{_UPDATE_TYPE_ZH.get(update_type, update_type or '-')}",
+        f"确定性：{_CONFIDENCE_ZH.get(confidence, confidence or '-')}",
+        f"命中：{_match_reason_zh(rec.get('l3_match_reason', '-'))}",
+        f"类别：{rec.get('category_code') or rec.get('announcement_type') or '-'}",
+        f"公告PDF：{rec.get('pdf_url', '')}",
     ]
     summary = "\n".join(summary_lines)
     return (
@@ -76,10 +111,21 @@ def write_feeds(records: list[dict], rss_dir: Path, config: dict) -> dict:
     (rss_dir / "by-category").mkdir(parents=True, exist_ok=True)
     written: dict[str, int] = {}
 
-    # 1) 全市场 L3 硬事实合集（仅 hard_delta）
+    # 0) 清理历史改名遗留的陈旧 feed：否则订阅端不会 404，而会「静默读旧数据」。
+    for stale in ("l3-hard-delta.xml",):
+        sp = rss_dir / stale
+        if sp.exists():
+            sp.unlink()
+
+    # 1) 全市场 L3 候选 · 高确定性合集（仅 hard_delta）
+    # 命名刻意叫「候选」而非「硬事实」：本 skill 只读标题+元数据、未解析正文，
+    # 按 KB 口径只能产 L1_L3_candidate，不能误导为已验证的 L3 hard_fact。
     hard = [r for r in records if r.get("update_type") == "hard_delta"]
-    p = rss_dir / "l3-hard-delta.xml"
-    p.write_text(build_atom("l3-hard-delta", "巨潮 L3 硬事实合集", hard), encoding="utf-8")
+    p = rss_dir / "l3-candidates-hard-delta.xml"
+    p.write_text(
+        build_atom("l3-candidates-hard-delta", "巨潮 L3 候选 · 高确定性公告", hard),
+        encoding="utf-8",
+    )
     written[str(p)] = len(hard)
 
     # 2) 按分类（hard + review 都进各自分类）
