@@ -236,6 +236,28 @@ class TestAtom(unittest.TestCase):
         # 特殊字符被正确转义
         self.assertIn("&amp;", xml)
 
+    def test_summary_localized_zh(self):
+        # whitebox feed 的 <summary> 应显示中文字段名+枚举，而非英文
+        recs = [{
+            "announcement_id": "9", "sec_code": "300001", "sec_name": "测试",
+            "title": "关于签订重大合同的公告", "published_at": "2026-06-30T08:00:00+08:00",
+            "pdf_url": "http://x/y.PDF", "detail_url": "https://x/d",
+            "category_code": "category_gqbd_szsh", "fact_type": "share_change",
+            "update_type": "review_candidate", "confidence": "low",
+            "l3_match_reason": "category:股权变动|combo_miss",
+        }]
+        xml = emit_rss.build_atom("t", "测试 feed", recs)
+        # 只校验用户可见的 <summary>（推荐理由展示位）；<category term> 保留英文稳定机器键
+        summary = minidom.parseString(xml).getElementsByTagName("summary")[0].firstChild.data
+        self.assertIn("事实类型：增减持", summary)
+        self.assertIn("判定：待核候选", summary)
+        self.assertIn("确定性：低", summary)
+        self.assertIn("分类:股权变动", summary)
+        self.assertIn("缺伴随词", summary)
+        # summary 内不应再出现英文枚举/字段名
+        for token in ("fact_type:", "update_type:", "hard_delta", "share_change", "combo_miss"):
+            self.assertNotIn(token, summary)
+
 
 class TestWriteFeeds(unittest.TestCase):
     def test_stale_renamed_feed_removed(self):
