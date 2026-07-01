@@ -8,13 +8,15 @@
 </div>
 
 <p align="center">
+  <a href="https://finhot.industry7view.com/public"><img src="https://img.shields.io/badge/%F0%9F%94%97_Live_Demo-finhot.industry7view.com-ff6b35" alt="live demo"/></a>
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license"/>
   <img src="https://img.shields.io/badge/based_on-Focal_(Folo_fork)-orange" alt="base"/>
 </p>
 
 <p align="center">
-  <img src="./docs/screenshots/timeline.png" alt="FinHot timeline UI" width="920"/>
+  <a href="https://finhot.industry7view.com/public"><img src="./docs/screenshots/public-demo.png" alt="FinHot public reader: every entry has an AI score and rationale" width="920"/></a>
 </p>
+<p align="center"><em>👆 <a href="https://finhot.industry7view.com/public">Live demo</a> — every entry carries an AI quality score and a rationale</em></p>
 
 ---
 

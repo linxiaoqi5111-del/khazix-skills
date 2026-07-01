@@ -8,13 +8,15 @@
 </div>
 
 <p align="center">
+  <a href="https://finhot.industry7view.com/public"><img src="https://img.shields.io/badge/%F0%9F%94%97_在线体验-finhot.industry7view.com-ff6b35" alt="live demo"/></a>
   <img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="license"/>
   <img src="https://img.shields.io/badge/based_on-Focal_(Folo_fork)-orange" alt="base"/>
 </p>
 
 <p align="center">
-  <img src="./docs/screenshots/timeline.png" alt="FinHot 时间线界面" width="920"/>
+  <a href="https://finhot.industry7view.com/public"><img src="./docs/screenshots/public-demo.png" alt="FinHot 公开阅读页：每条内容带 AI 评分与推荐理由" width="920"/></a>
 </p>
+<p align="center"><em>👆 <a href="https://finhot.industry7view.com/public">在线体验</a>：每条内容都有 AI 打分与「推荐理由」</em></p>
 
 ---
 
