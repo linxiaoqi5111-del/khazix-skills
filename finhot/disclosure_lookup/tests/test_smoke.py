@@ -80,3 +80,51 @@ class TestSseDateFormat(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCliOutputFlags(unittest.TestCase):
+    """CLI 输出控制（--level/--limit/--sort/--json）的展示层筛选。"""
+
+    def _rec(self, level, score, title="t"):
+        from disclosure_lookup.schema import DisclosureRecord
+
+        r = DisclosureRecord(
+            company_name="X", company_code="000001", source="cninfo",
+            title=title, url="u", published_at="2026-07-01T00:00:00+08:00",
+        )
+        r.triage_level, r.triage_score = level, score
+        return r
+
+    def test_level_filter_and_triage_sort(self):
+        import argparse
+
+        from disclosure_lookup import cli
+
+        recs = [self._rec("P2", 5), self._rec("P0", 9), self._rec("P0", 12), self._rec("P3", 1)]
+        args = argparse.Namespace(level="P0,p2", limit=None, sort="triage", json=False)
+        out = cli._filter_records(recs, args)
+        self.assertEqual([(r.triage_level, r.triage_score) for r in out],
+                         [("P0", 12), ("P0", 9), ("P2", 5)])
+
+    def test_limit(self):
+        import argparse
+
+        from disclosure_lookup import cli
+
+        args = argparse.Namespace(level=None, limit=2, sort="time", json=False)
+        self.assertEqual(len(cli._filter_records([self._rec("P1", 1)] * 5, args)), 2)
+
+    def test_json_output_includes_all_fields(self):
+        import io
+        import json as _json
+        from contextlib import redirect_stdout
+
+        from disclosure_lookup import cli
+
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            cli._print_records([self._rec("P0", 9, title="签订重大合同")], as_json=True)
+        payload = _json.loads(buf.getvalue())
+        self.assertEqual(payload[0]["triage_level"], "P0")
+        self.assertIn("is_reverse", payload[0])
+        self.assertIn("doc_hash", payload[0])

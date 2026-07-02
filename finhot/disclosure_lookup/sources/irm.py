@@ -91,14 +91,27 @@ def _save_sse_uids(m: dict[str, str]) -> None:
         pass
 
 
+_SSE_UID_PAGES = 72
+
+
 def _sse_build_uid_map() -> dict[str, str]:
-    """爬 allcompany.do 全市场 code→uid 映射（72 页，直连+per-page 重试）。一次性。"""
+    """爬 allcompany.do 全市场 code→uid 映射（72 页，直连+per-page 重试）。一次性。
+
+    首次构建实测 6-7 分钟；逐页向 stderr 报进度，避免长时间静默被误判卡死。
+    每 10 页增量落盘一次：中途中断（Ctrl+C/断网）不丢已爬部分，重跑在其上合并。"""
+    import sys
+
     import requests
     from bs4 import BeautifulSoup
 
-    m: dict[str, str] = {}
+    m: dict[str, str] = _load_sse_uids()
+    print(
+        f"[sse_einteract] 构建全市场 uid 映射（{_SSE_UID_PAGES} 页，首次约 6-7 分钟，"
+        f"已有 {len(m)} 条）...",
+        file=sys.stderr,
+    )
     with _no_proxy():
-        for page in range(1, 73):
+        for page in range(1, _SSE_UID_PAGES + 1):
             try:
                 r = _fetch_with_retry(
                     lambda p=page: requests.post(
@@ -117,8 +130,15 @@ def _sse_build_uid_map() -> dict[str, str]:
                 code = img["src"].split("/")[-1].split(".")[0] if img else ""
                 if uid and code:
                     m[code] = uid
+            if page % 10 == 0 or page == _SSE_UID_PAGES:
+                _save_sse_uids(m)
+                print(
+                    f"[sse_einteract] 进度 {page}/{_SSE_UID_PAGES} 页，已获得 {len(m)} 条映射",
+                    file=sys.stderr,
+                )
             if not j.get("content"):
                 break
+    print(f"[sse_einteract] uid 映射构建完成：{len(m)} 条", file=sys.stderr)
     return m
 
 
