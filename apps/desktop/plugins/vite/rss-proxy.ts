@@ -85,6 +85,26 @@ const EMBEDDING_MODEL = process.env.FINHOT_EMBEDDING_MODEL || "bge-m3"
 const FEED_SUGGESTION_SERVERCHAN = (process.env.FEED_SUGGESTION_SERVERCHAN || "").trim()
 // Token gating the read-only GET /api/public/feed-suggestions endpoint. Empty = endpoint disabled.
 const FEED_SUGGESTION_TOKEN = (process.env.FEED_SUGGESTION_TOKEN || "").trim()
+
+// Constant-time comparison so the admin token can't be recovered via timing.
+function timingSafeTokenEqual(provided: string, expected: string): boolean {
+  const a = Buffer.from(provided)
+  const b = Buffer.from(expected)
+  if (a.length !== b.length) return false
+  return crypto.timingSafeEqual(a, b)
+}
+
+// Reads the admin token from `Authorization: Bearer <token>` (preferred; query
+// strings leak into access/proxy logs) with query-param fallback for
+// compatibility.
+function extractAdminToken(req: IncomingMessage, parsedUrl: URL): string {
+  const auth = req.headers.authorization
+  if (typeof auth === "string" && auth.startsWith("Bearer ")) {
+    return auth.slice("Bearer ".length).trim()
+  }
+  return parsedUrl.searchParams.get("token") ?? ""
+}
+
 // Absolute origin the deployed public page should POST feed suggestions to (e.g.
 // a tunnel that reaches this dev server). Empty = same-origin, used in dev or
 // when the dev server serves the page directly.
@@ -3522,8 +3542,8 @@ export function rssProxyPlugin(): PluginOption {
           return
         }
         const parsedUrl = new URL(req.url ?? "/", "http://localhost")
-        const token = parsedUrl.searchParams.get("token") ?? ""
-        if (token !== FEED_SUGGESTION_TOKEN) {
+        const token = extractAdminToken(req, parsedUrl)
+        if (!timingSafeTokenEqual(token, FEED_SUGGESTION_TOKEN)) {
           res.writeHead(401, {
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
