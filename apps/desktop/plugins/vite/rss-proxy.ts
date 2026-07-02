@@ -1539,6 +1539,234 @@ ${items}
 </rss>`
 }
 
+// ─── Public data snapshots (Agent 接入轨道) ───
+// The public site is a static Cloudflare Pages deploy, so parameterized API
+// endpoints cannot run there. Instead we publish pre-computed JSON/RSS/Skill
+// snapshot files alongside index.html; agents pull the snapshot and filter
+// client-side. The dev server mirrors the same payloads dynamically.
+
+const PUBLIC_API_VERSION = "1"
+const DAILY_ARCHIVE_DAYS = 14
+
+function skillDir(): string {
+  return join(projectRoot || process.cwd(), "skills", "finhot-skill")
+}
+
+function readSkillFile(name: string): string | null {
+  const file = join(skillDir(), name)
+  if (!existsSync(file)) return null
+  try {
+    return readFileSync(file, "utf-8")
+  } catch {
+    return null
+  }
+}
+
+function buildVersionPayload() {
+  return {
+    apiVersion: PUBLIC_API_VERSION,
+    skillVersion: (readSkillFile("VERSION") ?? "0.0.0").trim(),
+    generatedAt: new Date().toISOString(),
+    installUrl: publicUrl("/finhot-skill/install.sh"),
+    skillUrl: publicUrl("/finhot-skill/SKILL.md"),
+  }
+}
+
+function mapPublicItem(
+  e: CachedEntry,
+  enrichments: EnrichmentMap,
+  feeds: Record<string, CachedFeed>,
+) {
+  const en = enrichments[e.id] ?? {}
+  const feed = feeds[e.feedId]
+  return {
+    id: e.id,
+    title: e.title,
+    url: e.url,
+    permalink: publicUrl(`/items/${encodeURIComponent(e.id)}`),
+    publishedAt: e.publishedAt,
+    author: e.author,
+    feedId: e.feedId,
+    feedTitle: feed?.title ?? null,
+    feedCategory: feed?.category ?? null,
+    summary: en.summary ?? null,
+    recommendationReason: en.recommendationReason ?? null,
+    qualityScore: en.qualityScore ?? null,
+    selected: deriveSelected(en),
+    tags: en.tags ?? [],
+    translation: en.translation ?? null,
+    clusterId: en.clusterId ?? null,
+    relatedEntryIds: en.relatedEntryIds ?? [],
+  }
+}
+
+/** Daily digest for one local-day slice: lead (top-scored selected) + sections grouped by feed category + flat tiers. */
+function buildDailyPayload(
+  dateStr: string,
+  allEntries: CachedEntry[],
+  enrichments: EnrichmentMap,
+  manifest: FeedCacheManifest,
+) {
+  const targetDate = new Date(dateStr)
+  targetDate.setHours(0, 0, 0, 0)
+  const dayStart = targetDate.getTime()
+  const dayEnd = dayStart + 86_400_000
+
+  const dayEntries = allEntries.filter((e) => {
+    const t = new Date(e.publishedAt).getTime()
+    return t >= dayStart && t < dayEnd
+  })
+  const selected = dayEntries.filter((e) => deriveSelected(enrichments[e.id] ?? {}) === "selected")
+  const watch = dayEntries.filter((e) => deriveSelected(enrichments[e.id] ?? {}) === "watch")
+
+  const map = (e: CachedEntry) => mapPublicItem(e, enrichments, manifest.feeds)
+
+  const lead = selected
+    .map(map)
+    .sort((a, b) => (b.qualityScore ?? 0) - (a.qualityScore ?? 0))
+    .at(0)
+
+  const byCategory = new Map<string, ReturnType<typeof map>[]>()
+  for (const e of selected) {
+    const label = manifest.feeds[e.feedId]?.category ?? "其他"
+    if (!byCategory.has(label)) byCategory.set(label, [])
+    byCategory.get(label)!.push(map(e))
+  }
+  const sections = [...byCategory.entries()]
+    .map(([label, items]) => ({
+      label,
+      items: items.sort((a, b) => (b.qualityScore ?? 0) - (a.qualityScore ?? 0)),
+    }))
+    .sort((a, b) => b.items.length - a.items.length)
+
+  return {
+    date: targetDate.toISOString().slice(0, 10),
+    totalEntries: dayEntries.length,
+    lead: lead ?? null,
+    sections,
+    selected: selected.map(map),
+    watch: watch.map(map),
+  }
+}
+
+/** Archive index: which recent dates have a digest worth reading (date + lead title + counts). */
+function buildDailiesIndex(
+  take: number,
+  allEntries: CachedEntry[],
+  enrichments: EnrichmentMap,
+  manifest: FeedCacheManifest,
+) {
+  const items: { date: string; leadTitle: string | null; selectedCount: number }[] = []
+  const day = new Date()
+  day.setHours(0, 0, 0, 0)
+  for (let i = 0; i < Math.min(take, DAILY_ARCHIVE_DAYS) && items.length < take; i++) {
+    const dateStr = new Date(day.getTime() - i * 86_400_000).toISOString().slice(0, 10)
+    const daily = buildDailyPayload(dateStr, allEntries, enrichments, manifest)
+    if (daily.selected.length === 0) continue
+    items.push({
+      date: daily.date,
+      leadTitle: daily.lead?.title ?? null,
+      selectedCount: daily.selected.length,
+    })
+  }
+  return { items, total: items.length }
+}
+
+/** All static snapshot files published next to index.html on each deploy. */
+function buildPublicSnapshotFiles(): { path: string; content: string }[] {
+  const manifest = readManifest()
+  const enrichments = readEnrichments()
+  const allEntries = loadAllCachedEntries()
+  const gated = capPerFeed(
+    allEntries.filter((e) => passesScoreGateServer(e, enrichments, manifest)),
+  )
+
+  const selectedEntries = gated.filter((e) => {
+    const feed = manifest.feeds[e.feedId]
+    if (detectPlatform(feed?.url, feed?.category) === "wechat") return true
+    return deriveSelected(enrichments[e.id] ?? {}) === "selected"
+  })
+  const watchOrBetter = gated.filter((e) => {
+    const sel = deriveSelected(enrichments[e.id] ?? {})
+    return sel === "selected" || sel === "watch"
+  })
+
+  const files: { path: string; content: string }[] = []
+  const json = (path: string, payload: unknown) =>
+    files.push({ path, content: JSON.stringify(payload) })
+
+  json("api/public/items.json", {
+    items: selectedEntries.slice(0, 200).map((e) => mapPublicItem(e, enrichments, manifest.feeds)),
+    total: Math.min(selectedEntries.length, 200),
+    filter: "selected",
+    generatedAt: new Date().toISOString(),
+  })
+  json("api/public/items-all.json", {
+    items: watchOrBetter.slice(0, 500).map((e) => mapPublicItem(e, enrichments, manifest.feeds)),
+    total: Math.min(watchOrBetter.length, 500),
+    filter: "watch",
+    generatedAt: new Date().toISOString(),
+  })
+  const topics = buildPublicTopics(allEntries, enrichments, manifest.feeds, 20)
+  json("api/public/topics.json", { topics, total: topics.length })
+
+  const today = new Date().toISOString().slice(0, 10)
+  const dailies = buildDailiesIndex(DAILY_ARCHIVE_DAYS, allEntries, enrichments, manifest)
+  json("api/public/dailies.json", dailies)
+  json("api/public/daily.json", buildDailyPayload(today, allEntries, enrichments, manifest))
+  for (const d of dailies.items) {
+    json(
+      `api/public/daily/${d.date}.json`,
+      buildDailyPayload(d.date, allEntries, enrichments, manifest),
+    )
+  }
+  json("api/public/version.json", buildVersionPayload())
+
+  files.push(
+    {
+      path: "feed.xml",
+      content: buildRssXml(
+        "FinHot 精选",
+        "AI 精选财经资讯（qualityScore ≥ 70）",
+        "/feed.xml",
+        selectedEntries,
+        enrichments,
+        manifest.feeds,
+      ),
+    },
+    {
+      path: "feed/all.xml",
+      content: buildRssXml(
+        "FinHot 全部",
+        "FinHot 全量财经资讯",
+        "/feed/all.xml",
+        watchOrBetter,
+        enrichments,
+        manifest.feeds,
+      ),
+    },
+  )
+
+  const todayDaily = buildDailyPayload(today, allEntries, enrichments, manifest)
+  files.push({
+    path: "feed/daily.xml",
+    content: buildRssXml(
+      "FinHot 今日摘要",
+      `FinHot ${today} 精选摘要`,
+      "/feed/daily.xml",
+      selectedEntries.filter((e) => todayDaily.selected.some((s) => s.id === e.id)),
+      enrichments,
+      manifest.feeds,
+    ),
+  })
+
+  for (const name of ["SKILL.md", "install.sh", "VERSION"]) {
+    const content = readSkillFile(name)
+    if (content != null) files.push({ path: `finhot-skill/${name}`, content })
+  }
+  return files
+}
+
 function cacheFeedResult(
   feedData: {
     id: string
@@ -3489,28 +3717,9 @@ export function rssProxyPlugin(): PluginOption {
             entries.filter((e) => passesScoreGateServer(e, enrichments, manifest)),
           )
 
-          const items = entries.slice(0, limit).map((e) => {
-            const en = enrichments[e.id] ?? {}
-            const feed = manifest.feeds[e.feedId]
-            return {
-              id: e.id,
-              title: e.title,
-              url: e.url,
-              publishedAt: e.publishedAt,
-              author: e.author,
-              feedId: e.feedId,
-              feedTitle: feed?.title ?? null,
-              feedCategory: feed?.category ?? null,
-              summary: en.summary ?? null,
-              recommendationReason: en.recommendationReason ?? null,
-              qualityScore: en.qualityScore ?? null,
-              selected: deriveSelected(en),
-              tags: en.tags ?? [],
-              translation: en.translation ?? null,
-              clusterId: en.clusterId ?? null,
-              relatedEntryIds: en.relatedEntryIds ?? [],
-            }
-          })
+          const items = entries
+            .slice(0, limit)
+            .map((e) => mapPublicItem(e, enrichments, manifest.feeds))
 
           res.writeHead(200, {
             "Content-Type": "application/json",
@@ -3562,64 +3771,97 @@ export function rssProxyPlugin(): PluginOption {
         }
         try {
           const parsedUrl = new URL(req.url ?? "/", "http://localhost")
-          const dateParam = parsedUrl.searchParams.get("date")
-
-          const targetDate = dateParam ? new Date(dateParam) : new Date()
-          targetDate.setHours(0, 0, 0, 0)
-          const dayStart = targetDate.getTime()
-          const dayEnd = dayStart + 86400000
+          // Accept both ?date=YYYY-MM-DD and the static-snapshot path style
+          // /api/public/daily/YYYY-MM-DD(.json) for dev/prod parity.
+          const pathDate = /^\/(\d{4}-\d{2}-\d{2})(?:\.json)?$/.exec(parsedUrl.pathname)?.[1]
+          const dateParam = parsedUrl.searchParams.get("date") ?? pathDate ?? null
 
           const allEntries = loadAllCachedEntries()
           const enrichments = readEnrichments()
           const manifest = readManifest()
 
-          const todayEntries = allEntries.filter((e) => {
-            const t = new Date(e.publishedAt).getTime()
-            return t >= dayStart && t < dayEnd
-          })
-
-          const selected = todayEntries.filter(
-            (e) => deriveSelected(enrichments[e.id] ?? {}) === "selected",
-          )
-          const watch = todayEntries.filter(
-            (e) => deriveSelected(enrichments[e.id] ?? {}) === "watch",
-          )
-
-          const mapEntry = (e: CachedEntry) => {
-            const en = enrichments[e.id] ?? {}
-            const feed = manifest.feeds[e.feedId]
-            return {
-              id: e.id,
-              title: e.title,
-              url: e.url,
-              publishedAt: e.publishedAt,
-              feedTitle: feed?.title ?? null,
-              summary: en.summary ?? null,
-              recommendationReason: en.recommendationReason ?? null,
-              qualityScore: en.qualityScore ?? null,
-              selected: deriveSelected(en),
-              tags: en.tags ?? [],
-            }
-          }
+          const dateStr = dateParam ?? new Date().toISOString().slice(0, 10)
+          const payload = buildDailyPayload(dateStr, allEntries, enrichments, manifest)
 
           res.writeHead(200, {
             "Content-Type": "application/json",
             "Access-Control-Allow-Origin": "*",
             "Cache-Control": "public, max-age=120",
           })
-          res.end(
-            JSON.stringify({
-              date: targetDate.toISOString().slice(0, 10),
-              totalEntries: todayEntries.length,
-              selected: selected.map(mapEntry),
-              watch: watch.map(mapEntry),
-            }),
-          )
+          res.end(JSON.stringify(payload))
         } catch (error: unknown) {
           const message = error instanceof Error ? error.message : "Unknown error"
           res.writeHead(500, { "Content-Type": "application/json" })
           res.end(JSON.stringify({ error: message }))
         }
+      })
+
+      // ─── /api/public/dailies — Daily digest archive index (date + lead title) ───
+      server.middlewares.use("/api/public/dailies", async (req, res) => {
+        if (handleCors(req, res)) return
+        if (req.method !== "GET") {
+          res.writeHead(405, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: "Method not allowed" }))
+          return
+        }
+        try {
+          const parsedUrl = new URL(req.url ?? "/", "http://localhost")
+          const takeParam = parsedUrl.searchParams.get("take")
+          const take = takeParam
+            ? Math.min(Math.max(Number.parseInt(takeParam, 10) || 1, 1), DAILY_ARCHIVE_DAYS)
+            : DAILY_ARCHIVE_DAYS
+          const payload = buildDailiesIndex(
+            take,
+            loadAllCachedEntries(),
+            readEnrichments(),
+            readManifest(),
+          )
+          res.writeHead(200, {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=300",
+          })
+          res.end(JSON.stringify(payload))
+        } catch (error: unknown) {
+          const message = error instanceof Error ? error.message : "Unknown error"
+          res.writeHead(500, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: message }))
+        }
+      })
+
+      // ─── /api/public/version — Version info for skill self-update check ───
+      server.middlewares.use("/api/public/version", async (req, res) => {
+        if (handleCors(req, res)) return
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+          "Cache-Control": "public, max-age=300",
+        })
+        res.end(JSON.stringify(buildVersionPayload()))
+      })
+
+      // ─── /finhot-skill/* — Serve the agent skill (SKILL.md / install.sh / VERSION) ───
+      server.middlewares.use("/finhot-skill", async (req, res) => {
+        const parsedUrl = new URL(req.url ?? "/", "http://localhost")
+        const name = parsedUrl.pathname.replaceAll(/^\/+|\/+$/g, "") || "SKILL.md"
+        const allowed: Record<string, string> = {
+          "SKILL.md": "text/markdown; charset=utf-8",
+          "install.sh": "text/x-shellscript; charset=utf-8",
+          VERSION: "text/plain; charset=utf-8",
+        }
+        const contentType = allowed[name]
+        const content = contentType ? readSkillFile(name) : null
+        if (!contentType || content == null) {
+          res.writeHead(404, { "Content-Type": "application/json" })
+          res.end(JSON.stringify({ error: "Not found" }))
+          return
+        }
+        res.writeHead(200, {
+          "Content-Type": contentType,
+          "Access-Control-Allow-Origin": "*",
+          "Cache-Control": "public, max-age=300",
+        })
+        res.end(content)
       })
 
       // ─── /feed.xml — Selected entries RSS (精选, qualityScore ≥ 70) ───
@@ -4079,6 +4321,16 @@ export function rssProxyPlugin(): PluginOption {
         const tmpDir = join(cacheDir, "_pages_deploy")
         if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true })
         writeFileSync(join(tmpDir, "index.html"), html, "utf-8")
+
+        // Publish the agent-facing data snapshots (JSON API / RSS / Skill) so
+        // the public static site serves real data at these paths instead of
+        // falling back to the SPA index.html.
+        for (const file of buildPublicSnapshotFiles()) {
+          const target = join(tmpDir, file.path)
+          const dir = resolvePath(target, "..")
+          if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+          writeFileSync(target, file.content, "utf-8")
+        }
 
         // The wrangler upload occasionally times out or hits a transient network
         // error (ETIMEDOUT/ECONNRESET/socket hang up) when Cloudflare is slow.

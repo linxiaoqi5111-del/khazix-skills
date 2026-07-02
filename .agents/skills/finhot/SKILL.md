@@ -35,7 +35,23 @@ All AI processing happens locally. Public endpoints only render pre-computed res
 
 RSS item links point to FinHot detail permalinks (`/items/<id>`). The original article URL is kept as the RSS `<source>` URL and on the detail page.
 
-### JSON API
+### Static snapshot endpoints (public site)
+
+The public site (`https://finhot.industry7view.com`) is a static Cloudflare Pages deploy — the dynamic API below only runs on the local dev server. On the public site, use the pre-generated snapshot files instead (refreshed on every deploy; filter client-side with `jq`):
+
+| Path                            | Content                                                |
+| ------------------------------- | ------------------------------------------------------ |
+| `/api/public/items.json`        | Selected items snapshot (with `permalink` field)       |
+| `/api/public/items-all.json`    | Selected + watch tier snapshot                         |
+| `/api/public/topics.json`       | Hot topic clusters                                     |
+| `/api/public/daily.json`        | Today's digest (lead + category sections)              |
+| `/api/public/daily/{date}.json` | Digest archive for a specific date                     |
+| `/api/public/dailies.json`      | Archive index (date + lead title + counts)             |
+| `/api/public/version.json`      | apiVersion / skillVersion / generatedAt                |
+| `/finhot-skill/SKILL.md`        | Agent-facing skill (canonical: `skills/finhot-skill/`) |
+| `/finhot-skill/install.sh`      | One-line skill installer                               |
+
+### JSON API (local dev server)
 
 All API endpoints return JSON with `Access-Control-Allow-Origin: *`.
 
@@ -144,12 +160,12 @@ Hot topic clusters (multi-source event aggregation). The endpoint uses the same 
 
 #### `GET /api/public/daily`
 
-Today's digest grouped by selection tier.
+Digest for one day: lead headline (top-scored selected item), sections grouped by feed category, plus flat selection tiers.
 
 **Parameters:**
 | Param | Default | Description |
 |-------|---------|-------------|
-| `date` | today | ISO date (YYYY-MM-DD) |
+| `date` | today | ISO date (YYYY-MM-DD); also accepted as path `/api/public/daily/{date}` |
 
 **Response:**
 
@@ -157,10 +173,20 @@ Today's digest grouped by selection tier.
 {
   "date": "2024-01-15",
   "totalEntries": 45,
+  "lead": { "title": "...", "qualityScore": 91, ... },
+  "sections": [{ "label": "微博", "items": [...] }],
   "selected": [...],
   "watch": [...]
 }
 ```
+
+#### `GET /api/public/dailies`
+
+Archive index of recent daily digests: `{ items: [{ date, leadTitle, selectedCount }], total }`. Param `take` (default/max 14).
+
+#### `GET /api/public/version`
+
+Version info for agent self-update checks: `{ apiVersion, skillVersion, generatedAt, installUrl, skillUrl }`. `skillVersion` comes from `skills/finhot-skill/VERSION`.
 
 ## Selection Tiers
 
