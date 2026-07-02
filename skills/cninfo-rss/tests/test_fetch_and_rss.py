@@ -280,5 +280,86 @@ class TestWriteFeeds(unittest.TestCase):
             self.assertTrue((rss_dir / "l3-candidates-hard-delta.xml").exists())
 
 
+class TestRealConfigGranularity(unittest.TestCase):
+    """用真实 config.yaml 回归 2026-07 实测样本的准入/丢弃/降级口径。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.cfg = fc.load_config()
+
+    def _rec(self, title):
+        return {"title": title, "sec_code": "300001", "sec_name": "测试", "category_code": "",
+                "announcement_id": "1", "published_at": "2026-06-30T08:00:00+08:00"}
+
+    def _classify(self, title):
+        return fc.classify(self._rec(title), self.cfg)
+
+    def test_customer_design_win_is_hard(self):
+        out = self._classify("关于获得合资品牌客户座椅项目定点的公告")
+        self.assertEqual(out["fact_type"], "customer_validation")
+        self.assertEqual(out["update_type"], "hard_delta")
+
+    def test_regulatory_approval_is_hard(self):
+        for title in ("关于产品获得医疗器械注册证的公告", "关于利拉鲁肽注射液获批上市的公告"):
+            out = self._classify(title)
+            self.assertEqual(out["fact_type"], "regulatory_approval", title)
+            self.assertEqual(out["update_type"], "hard_delta", title)
+
+    def test_ce_certification_matched(self):
+        out = self._classify("关于血糖监测产品获得欧盟CE认证的公告")
+        self.assertEqual(out["fact_type"], "certification")
+
+    def test_registration_change_demoted(self):
+        out = self._classify("关于公司医疗器械注册证变更的公告")
+        self.assertEqual(out["update_type"], "review_candidate")
+
+    def test_bid_candidate_demoted(self):
+        out = self._classify("关于中标候选人公示的提示性公告")
+        self.assertEqual(out["update_type"], "review_candidate")
+
+    def test_fundraising_supervision_agreement_dropped(self):
+        self.assertIsNone(self._classify("关于开立募集资金专户并签订三方监管协议的公告"))
+
+    def test_management_rules_dropped(self):
+        self.assertIsNone(self._classify("日常经营重大合同信息披露管理办法（2026年6月）"))
+
+    def test_quarterly_patent_dropped(self):
+        self.assertIsNone(self._classify("关于2026年第二季度发明专利取得情况的公告"))
+
+    def test_acquisition_appraisal_report_dropped(self):
+        self.assertIsNone(self._classify("拟收购股权涉及的全部权益价值项目资产评估报告"))
+
+    def test_acquisition_with_equity_is_hard(self):
+        out = self._classify("关于收购世界五金塑胶厂有限公司100%股权进展暨交割完成的公告")
+        self.assertEqual(out["fact_type"], "acquisition")
+        self.assertEqual(out["update_type"], "hard_delta")
+
+
+class TestByFactTypeFeeds(unittest.TestCase):
+    def test_per_fact_type_feed_written(self):
+        import tempfile
+
+        def rec(ann_id, ft):
+            return {"announcement_id": ann_id, "sec_code": "300001", "sec_name": "测试",
+                    "title": "t", "published_at": "2026-06-30T08:00:00+08:00",
+                    "pdf_url": "", "detail_url": "", "category_code": "",
+                    "fact_type": ft, "update_type": "hard_delta",
+                    "confidence": "high", "l3_match_reason": "keyword:x"}
+
+        with tempfile.TemporaryDirectory() as d:
+            rss_dir = Path(d)
+            written = emit_rss.write_feeds(
+                [rec("1", "order_contract"), rec("2", "order_contract"), rec("3", "customer_validation")],
+                rss_dir, {"l3_categories": [], "watchlist_codes": []},
+            )
+            p1 = rss_dir / "by-fact-type" / "order_contract.xml"
+            p2 = rss_dir / "by-fact-type" / "customer_validation.xml"
+            self.assertEqual(written[str(p1)], 2)
+            self.assertEqual(written[str(p2)], 1)
+            xml = p2.read_text(encoding="utf-8")
+            self.assertIn("客户定点/导入", xml)
+            minidom.parseString(xml)
+
+
 if __name__ == "__main__":
     unittest.main()

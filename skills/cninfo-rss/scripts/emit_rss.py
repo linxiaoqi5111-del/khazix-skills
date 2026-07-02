@@ -25,7 +25,17 @@ _FACT_TYPE_ZH = {
     "earnings_guidance": "业绩预告",
     "equity_incentive": "股权激励",
     "dividend": "分红派息",
-    "other_hard": "其他硬事实",
+    "mass_production": "量产/投产",
+    "capacity_expansion": "产能扩张",
+    "customer_validation": "客户定点/导入",
+    "certification": "认证",
+    "regulatory_approval": "注册/审批获证",
+    "license_out": "授权许可",
+    "restructuring": "重大重组",
+    "acquisition": "收购并购",
+    "private_placement": "定增",
+    "buyback": "回购",
+    "project_landing": "项目落地",
 }
 _UPDATE_TYPE_ZH = {"hard_delta": "高确定性候选", "review_candidate": "待核候选"}
 _CONFIDENCE_ZH = {"high": "高", "low": "低"}
@@ -106,7 +116,7 @@ def build_atom(feed_id: str, title: str, records: Iterable[dict], *, self_path: 
 
 
 def write_feeds(records: list[dict], rss_dir: Path, config: dict) -> dict:
-    """写出三类 feed，返回 {path: count} 概览。"""
+    """写出四类 feed（合集/按分类/按事实类型/自选股），返回 {path: count} 概览。"""
     rss_dir = Path(rss_dir)
     (rss_dir / "by-category").mkdir(parents=True, exist_ok=True)
     written: dict[str, int] = {}
@@ -141,7 +151,19 @@ def write_feeds(records: list[dict], rss_dir: Path, config: dict) -> dict:
         p.write_text(build_atom(code, title, recs), encoding="utf-8")
         written[str(p)] = len(recs)
 
-    # 3) 自选股（watchlist_codes；为空时镜像全部）
+    # 3) 按事实类型（细颗粒度订阅：每个 fact_type 一个独立 feed，hard + review 都进）
+    (rss_dir / "by-fact-type").mkdir(parents=True, exist_ok=True)
+    by_ft: dict[str, list[dict]] = {}
+    for r in records:
+        ft = r.get("fact_type") or "other_hard"
+        by_ft.setdefault(ft, []).append(r)
+    for ft, recs in by_ft.items():
+        p = rss_dir / "by-fact-type" / f"{ft}.xml"
+        title = f"巨潮 L3 · {_FACT_TYPE_ZH.get(ft, ft)}"
+        p.write_text(build_atom(f"fact-type-{ft}", title, recs), encoding="utf-8")
+        written[str(p)] = len(recs)
+
+    # 4) 自选股（watchlist_codes；为空时镜像全部）
     watchlist = [str(c).strip() for c in (config.get("watchlist_codes") or [])]
     if watchlist:
         wl = [r for r in records if r.get("sec_code") in watchlist]

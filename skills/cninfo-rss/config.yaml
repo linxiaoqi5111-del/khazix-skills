@@ -48,7 +48,17 @@ l3_categories:
 
 # ---- L3 标题关键词（关键词兜底路径，走 cninfo searchkey 服务端检索）----
 l3_title_keywords:
-  include_any: # 标题命中任一 → 进入 L3 候选
+  include_any:
+    # 2026-07 实测样本补充的高价值类型，放最前：特异词优先于宽词（如"签订"）命中，
+    # 否则"签订授权许可协议"会被宽词抢先归错 fact_type
+    - 定点 # 车链/客户项目定点=最硬客户验证信号之一
+    - 注册证 # 药品/医疗器械注册证（准入硬事实）
+    - 获批上市 # 药品获批上市
+    - 临床试验批准
+    - CE认证 # "获得欧盟CE认证"类，现有"通过/取得认证"匹配不到
+    - 授权许可 # license-out/license-in
+    - 交割完成 # 收购从 planned → realized 的落地信号
+    # 以下为原有关键词（标题命中任一 → 进入 L3 候选）
     - 重大合同
     - 中标
     - 签订
@@ -106,6 +116,13 @@ l3_title_keywords:
     - 股东会决议
     - 风险提示
     - 担保
+    # 2026-07 实测新增：高频噪音（"签订/收购"宽词最大漏放来源）
+    - 监管协议 # 募集资金三方/四方/五方监管协议
+    - 管理办法
+    - 资产评估报告
+    - 财务顾问
+    - 报告书摘要
+    - 发明专利 # 季度批量专利公告=例行披露，非边际硬事实
 
 # ---- 低确定性降级（标题含这些词）----
 # evidence_layer 仍 L3，但 update_type=review_candidate，confidence=low，不进 entity 正文
@@ -123,6 +140,11 @@ low_confidence_keywords:
   # 预披露=尚未实施的减持/重组计划，属「planned」而非「realized」，强制降级
   - 预披露
   - 预案
+  # 中标候选人公示/拟中标=尚未正式中标，planned 而非 realized
+  - 中标候选人
+  - 拟中标
+  # 注册证"变更"是存量证照维护，不是新增准入
+  - 注册证变更
 
 # ---- 关键词 → fact_type 映射（关键词路径用；分类路径用 l3_categories.fact_types）----
 fact_type_by_keyword:
@@ -148,6 +170,13 @@ fact_type_by_keyword:
   增持: share_change
   减持: share_change
   项目落地: project_landing
+  定点: customer_validation
+  注册证: regulatory_approval
+  获批上市: regulatory_approval
+  临床试验批准: regulatory_approval
+  CE认证: certification
+  授权许可: license_out
+  交割完成: acquisition
   业绩快报: earnings_flash
   业绩预增: earnings_guidance
   业绩预减: earnings_guidance
@@ -165,3 +194,6 @@ hard_delta_combo_rules:
   增持: [完成, 计划, 进展, 权益变动, 股份, 股东, 持股]
   减持: [完成, 计划, 进展, 权益变动, 股份, 股东, 持股]
   亏损: [业绩, 净利, 预计, 预告, 季度, 年度, 半年]
+  定点: [获得, 收到, 客户, 项目, 通知]
+  注册证: [取得, 获得, 获批]
+  收购: [股权, 资产, 交割, 完成, 业务, 要约]
