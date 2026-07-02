@@ -99,6 +99,7 @@ _LIFECYCLE_HIGH = {  # 产业链逻辑直接受冲击
     "mass_production",
     "capacity_expansion",
     "order_contract",
+    "regulatory_approval",  # 注册证/获批上市：准入 0→1，产品周期直接受冲击
 }
 _LIFECYCLE_MID = {  # 重要但偏常规事件
     "certification",
@@ -110,6 +111,7 @@ _LIFECYCLE_MID = {  # 重要但偏常规事件
     "buyback",
     "earnings_guidance",
     "earnings_flash",
+    "license_out",  # 授权许可：重要但金额/里程碑需看正文
 }
 
 # ---- Gap A：产品进展软词表 ----
